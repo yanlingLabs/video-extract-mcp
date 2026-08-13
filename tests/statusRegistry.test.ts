@@ -59,4 +59,15 @@ describe('createStatusRegistry', () => {
     r.snapshot().items[0]!.stageHistory.push({ stage: 'FORGED', at: 0 });
     expect(r.snapshot().items[0]!.stageHistory.map((s) => s.stage)).toEqual(['resolving']);
   });
+
+  it('ids stay unique and monotonic across an eviction', () => {
+    const r = createStatusRegistry(1);
+    const a = r.register({ url: 'A', tool: 'analyze', destinationPath: '/d' });
+    r.finish(a, 'ok');
+    const b = r.register({ url: 'B', tool: 'analyze', destinationPath: '/d' }); // evicts A
+    r.finish(b, 'ok');
+    const c = r.register({ url: 'C', tool: 'analyze', destinationPath: '/d' }); // evicts B
+    expect(c).toBeGreaterThan(b);
+    expect(b).toBeGreaterThan(a);
+  });
 });
