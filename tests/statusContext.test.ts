@@ -59,4 +59,36 @@ describe('status context', () => {
       },
     );
   });
+
+  it('a spawn that never gets a pid (ENOENT) reports onSpawnEnded exactly once, never onSpawn', async () => {
+    // Node fires BOTH 'error' and 'close' for a spawn that never got a pid
+    // (ENOENT/EACCES class) -- confirmed empirically against child_process
+    // directly (~1ms apart: 'error' first, 'close' immediately after, on
+    // separate event-loop turns), not hypothetical. Without a once-guard in
+    // run(), each handler calls onSpawnEnded, so one failed spawn reports
+    // its end twice: within a context spanning more than one spawn, that
+    // phantom second "ended" can land after a LATER, unrelated spawn's own
+    // onSpawn already ran, wrongly clearing a live child from a status view
+    // keyed on this event. onSpawn must never fire at all here -- child.pid
+    // stays non-numeric the whole time (the existing
+    // typeof child.pid === 'number' guard), so this also pins that guard
+    // alongside the once-guard.
+    let spawnCount = 0, endedCount = 0;
+    await expect(
+      runWithStatus(
+        { onSpawn: () => { spawnCount++; }, onSpawnEnded: () => { endedCount++; } },
+        () => run('definitely-not-a-real-binary-xyz', []),
+      ),
+    ).rejects.toThrow();
+    // The rejection above settles from the 'error' handler, which can
+    // observably beat 'close' to this line -- asserting immediately here
+    // would race the very double-fire this test exists to catch, passing
+    // even against an unguarded implementation purely by timing luck (this
+    // was caught empirically while verifying the fix below: the assertion
+    // read ended:1 under the reverted/unguarded code too, without this
+    // wait). 100ms outlasts the observed ~1ms gap by two orders of
+    // magnitude before asserting the second call never lands.
+    await new Promise((r) => setTimeout(r, 100));
+    expect({ spawn: spawnCount, ended: endedCount }).toEqual({ spawn: 0, ended: 1 });
+  });
 });

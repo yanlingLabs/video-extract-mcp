@@ -21,6 +21,23 @@ export async function run(
     if (status?.onSpawn && typeof child.pid === 'number') {
       status.onSpawn(child.pid, cmd);
     }
+    // A spawn that never gets a pid (ENOENT/EACCES class) makes Node fire
+    // BOTH 'error' and 'close' -- confirmed, not hypothetical. Without a
+    // guard, both handlers below would each call onSpawnEnded, reporting
+    // one failed spawn's end twice. Scoped to this run() call's own Promise
+    // executor, so it guards exactly the one child this call owns: within a
+    // context spanning more than one spawn (e.g. analyze.ts's per-frame OCR
+    // loop degrading past repeated failed tesseract spawns), a phantom
+    // second "ended" from THIS spawn could otherwise land after a LATER,
+    // unrelated spawn's own onSpawn already set that spawn's childPid --
+    // wrongly clearing a live, killable child from the status view. No
+    // inner try/catch here (unlike an earlier draft of this fix): every
+    // callback on `status` is already wrapped by safe() at runWithStatus()
+    // establishment (src/status/context.ts), so a local try/catch around
+    // status?.onSpawnEnded?.() would be unreachable dead code -- the same
+    // redundancy reasoning already applied to the onSpawn call above.
+    let ended = false;
+    const endOnce = () => { if (!ended) { ended = true; status?.onSpawnEnded?.(); } };
     let stdout = '', stderr = '';
     const timer = opts.timeoutMs
       ? setTimeout(() => { child.kill('SIGKILL'); }, opts.timeoutMs)
@@ -33,12 +50,14 @@ export async function run(
       if (timer) clearTimeout(timer);
       // A spawn that errored still ends -- the child's lifecycle is over,
       // so any observer waiting on onSpawnEnded must be told either way.
-      status?.onSpawnEnded?.();
+      // endOnce(), not a bare call: 'close' may still fire after this for
+      // the exact same spawn (see the comment above endOnce's definition).
+      endOnce();
       reject(e);
     });
     child.on('close', (code) => {
       if (timer) clearTimeout(timer);
-      status?.onSpawnEnded?.();
+      endOnce();
       resolve({ stdout, stderr, code: code ?? -1 });
     });
   });
