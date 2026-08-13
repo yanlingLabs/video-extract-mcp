@@ -6,6 +6,7 @@ import { resolve } from '../resolve/index.js';
 import { trim } from '../media/ffmpeg.js';
 import { descriptionPreview, mediaFileName, writeMetadata } from './artifacts.js';
 import { itemDir } from './analyzeTool.js';
+import { runWithStatus } from '../status/context.js';
 
 /**
  * True when `filePath` is located inside `dir`. Fix 1 (data loss): renaming
@@ -237,10 +238,29 @@ export async function resolveOneVideo(item: ResolveVideoItem, destinationPath: s
 export interface ResolveToolArgs { destinationPath: string; videos: ResolveVideoItem[]; }
 export interface ResolveToolResult { videos: ResolveItemResult[]; }
 
-export async function resolveVideoTool(args: ResolveToolArgs): Promise<ResolveToolResult> {
+/** resolve_video's counterpart to AnalyzeRunHooks (src/agent/analyzeTool.ts)
+ *  -- deliberately narrower: resolve has no slot pool of its own (no
+ *  `run`/`onQueued`) and no onItemStart. onStage will in practice only ever
+ *  carry 'downloading' (§4), since resolveOneVideo has no multi-stage
+ *  pipeline of its own the way analyzeVideo does -- everything here reaches
+ *  the caller purely via the status context wrapped around each item below. */
+export interface ResolveRunHooks {
+  onStage?: (itemIndex: number, stage: string) => void;
+  onSpawn?: (itemIndex: number, pid: number, command: string) => void;
+  onSpawnEnded?: (itemIndex: number) => void;
+}
+
+export async function resolveVideoTool(args: ResolveToolArgs, hooks?: ResolveRunHooks): Promise<ResolveToolResult> {
   const n = args.videos.length;
   const videos = await Promise.all(args.videos.map((item, i) =>
-    resolveOneVideo(item, itemDir(args.destinationPath, i, n)),
+    runWithStatus(
+      {
+        onStage: (s) => hooks?.onStage?.(i, s),
+        onSpawn: (pid, cmd) => hooks?.onSpawn?.(i, pid, cmd),
+        onSpawnEnded: () => hooks?.onSpawnEnded?.(i),
+      },
+      () => resolveOneVideo(item, itemDir(args.destinationPath, i, n)),
+    ),
   ));
   return { videos };
 }

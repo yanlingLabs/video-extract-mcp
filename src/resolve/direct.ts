@@ -4,6 +4,7 @@ import type { VideoResolver, ResolveOptions, ResolveResult } from '../types.js';
 import { probe } from '../media/ffmpeg.js';
 import { run } from '../util/run.js';
 import { fetchToFile, MEDIA_DOWNLOAD_TIMEOUT_MS } from '../util/download.js';
+import { statusCallbacks } from '../status/context.js';
 
 const MEDIA_EXT = /\.(mp4|m4v|mov|mkv|webm|m3u8|mpd|ts)(\?|#|$)/i;
 
@@ -30,6 +31,12 @@ export class DirectMediaResolver implements VideoResolver {
     }
     const out = join(opts.workDir, 'source.mp4');
     try {
+      // §4: gated structurally, not by an explicit condition here -- the
+      // opts.returnVideo === false branch above already returned before
+      // this point, so reaching this line at all means a real transfer is
+      // about to happen. One emit covers both sub-branches below (ffmpeg
+      // mux and fetchToFile), since both genuinely move media bytes.
+      statusCallbacks()?.onStage?.('downloading');
       // HLS/DASH manifests must be muxed by ffmpeg, not byte-copied. Bounded
       // like every other subprocess: a stalled origin used to hang this mux
       // (and analyze_video with it) forever.

@@ -4,6 +4,7 @@ import type { VideoResolver, ResolveOptions, ResolveResult, ResolveFailure, Capt
 import { run } from '../util/run.js';
 import { probe } from '../media/ffmpeg.js';
 import { baseLang } from '../transcript/routing.js';
+import { statusCallbacks } from '../status/context.js';
 
 export function classifyYtDlpError(stderr: string): ResolveFailure {
   const s = stderr.toLowerCase();
@@ -246,6 +247,11 @@ export class YtDlpResolver implements VideoResolver {
     // Comments can be very slow on popular videos (spec §2.1).
     if (opts.comments) args.push('--write-comments');
 
+    // §4: fires immediately before the one call that actually moves media
+    // bytes -- gated on wantsDownload because --skip-download still reaches
+    // this SAME run() call on the metadata-only path (only an added flag),
+    // so placement alone cannot gate it the way it can in direct.ts/wechat.ts.
+    if (wantsDownload) statusCallbacks()?.onStage?.('downloading');
     const r = await run('yt-dlp', [...args, url], { timeoutMs: 15 * 60_000 });
     if (r.code !== 0) return classifyYtDlpError(r.stderr);
 

@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import type { VideoResolver, ResolveOptions, ResolveResult, ResolveFailure } from '../types.js';
 import { probe } from '../media/ffmpeg.js';
 import { fetchToFile, MEDIA_DOWNLOAD_TIMEOUT_MS } from '../util/download.js';
+import { statusCallbacks } from '../status/context.js';
 
 /**
  * WeChat Channels (视频号) headless resolver.
@@ -369,6 +370,11 @@ export class WeChatHeadlessResolver implements VideoResolver {
   private async download(mediaUrl: string, opts: ResolveOptions, title: string): Promise<ResolveResult> {
     const out = join(opts.workDir, 'source.mp4');
     try {
+      // §4: gated structurally, same as direct.ts -- download() is only ever
+      // reached from resolve() after its own opts.returnVideo === false
+      // early return (above), so getting here already means a real transfer
+      // is about to happen.
+      statusCallbacks()?.onStage?.('downloading');
       // Bounded (unlike the API calls' short 15s REQUEST_TIMEOUT_MS, a media
       // body legitimately takes minutes): a stalled CDN aborts into the
       // catch below instead of hanging analyze_video indefinitely.

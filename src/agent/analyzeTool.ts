@@ -4,6 +4,7 @@ import type { AnalyzeStage, FrameMode, Manifest, Transcript } from '../types.js'
 import { analyzeVideo } from '../analyze.js';
 import { buildManifest } from '../manifest.js';
 import { writeManifest, writeTranscript } from './artifacts.js';
+import { runWithStatus } from '../status/context.js';
 
 /** Above this, the transcript goes to disk only -- a long transcript is
  *  exactly the payload destinationPath exists to keep out of context. */
@@ -220,6 +221,13 @@ export interface AnalyzeRunHooks {
   run?: <T>(fn: () => Promise<T>, onQueued: (ahead: number) => void) => Promise<T>;
   onStage?: (itemIndex: number, stage: AnalyzeStage) => void;
   onQueued?: (itemIndex: number, ahead: number) => void;
+  /** Spawn lifecycle for the item's currently-running child process
+   *  (yt-dlp/ffmpeg/asrWorker/embedWorker). Reported via the status context
+   *  (src/status/context.ts) established around the item's execution below
+   *  -- src/util/run.ts reads it, so this reaches every run()-calling
+   *  module with no signature changes there. */
+  onSpawn?: (itemIndex: number, pid: number, command: string) => void;
+  onSpawnEnded?: (itemIndex: number) => void;
   /** Fires when the item actually starts executing (post-queue, inside the
    *  `run` wrapper's own fn). Available for any caller that wants this
    *  signal; src/mcp.ts's own honest-cancellation marking no longer goes
@@ -244,7 +252,17 @@ export async function analyzeVideoTool(
   const exec = hooks?.run ?? (<T,>(fn: () => Promise<T>) => fn());
   const videos = await Promise.all(args.videos.map((item, i) =>
     exec(
-      () => { hooks?.onItemStart?.(i); return analyzeOneVideo(item, itemDir(args.destinationPath, i, n), (s) => hooks?.onStage?.(i, s)); },
+      () => {
+        hooks?.onItemStart?.(i);
+        return runWithStatus(
+          {
+            onStage: (s) => hooks?.onStage?.(i, s as AnalyzeStage),
+            onSpawn: (pid, cmd) => hooks?.onSpawn?.(i, pid, cmd),
+            onSpawnEnded: () => hooks?.onSpawnEnded?.(i),
+          },
+          () => analyzeOneVideo(item, itemDir(args.destinationPath, i, n), (s) => hooks?.onStage?.(i, s)),
+        );
+      },
       (ahead) => hooks?.onQueued?.(i, ahead),
     ),
   ));
