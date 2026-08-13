@@ -163,8 +163,11 @@ export interface Manifest {
  *  A stage firing means that work is STARTING, not that it already
  *  succeeded -- each call is the first statement of its stage, before
  *  anything in it has actually run, so a caller sees it even when that
- *  stage goes on to fail. */
-export type AnalyzeStage = 'resolving' | 'transcribing' | 'frames';
+ *  stage goes on to fail. 'downloading' fires when media transfer genuinely
+ *  begins (never on a metadata-only resolve); it is emitted from the resolver
+ *  layer via the status context (src/status/context.ts), so it reaches
+ *  agent-layer hooks but not a bare library caller's opts.onStage. */
+export type AnalyzeStage = 'resolving' | 'downloading' | 'transcribing' | 'frames';
 
 export interface AnalyzeOptions {
   start?: number; end?: number; maxFrames?: number; transcript?: boolean;
