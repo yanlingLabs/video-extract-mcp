@@ -798,3 +798,43 @@ describe('status channel wiring (Task 4)', () => {
     await client.close();
   }, 30_000);
 });
+
+describe('discovery exit-handler install guard (Task 5)', () => {
+  it('installs discovery exit/signal handlers at most once no matter how many live servers are built', async () => {
+    const counts = () => (
+      { exit: process.listenerCount('exit'), SIGINT: process.listenerCount('SIGINT'), SIGTERM: process.listenerCount('SIGTERM') }
+    );
+    // Deliberately NOT asserted as growth against a "before this test"
+    // baseline (the reviewer's own original shape): src/mcp.ts's
+    // discoveryExitHandlersInstalled guard is module-level, and by this
+    // point in the file an EARLIER test (the very first buildServer() call,
+    // "v2 surface > builds without throwing", line ~103, which uses no
+    // opts and so gets a live default endpoint) has almost certainly
+    // already tripped it -- confirmed empirically: running the reviewer's
+    // original before/afterFirst-growth version against this file's real
+    // execution order observed before = {exit:1, SIGINT:1, SIGTERM:1}, not
+    // 0, making a strict-growth assertion here order-dependent and flaky
+    // rather than a real signal either way.
+    //
+    // What the guard actually promises, and what this asserts instead: (1)
+    // after ANY live build in this test, all three listener kinds are
+    // present (order-independent -- true whether THIS build or an earlier
+    // test's build is what installed them), and (2), the decisive half,
+    // completely unweakened from the mandated shape: a SECOND live build in
+    // the SAME process adds NONE. That second assertion is what the
+    // reviewer's mutant (`if (false && discoveryExitHandlersInstalled)
+    // return`) actually breaks -- it re-installs a fresh listener trio on
+    // every live build, uncapped, which this test's second buildServer()
+    // call would catch as counts() no longer equalling afterFirst.
+    buildServer({ statusPort: 0 });
+    await new Promise((r) => setTimeout(r, 80));
+    const afterFirst = counts();
+    expect(afterFirst.exit).toBeGreaterThanOrEqual(1);
+    expect(afterFirst.SIGINT).toBeGreaterThanOrEqual(1);
+    expect(afterFirst.SIGTERM).toBeGreaterThanOrEqual(1);
+
+    buildServer({ statusPort: 0 });
+    await new Promise((r) => setTimeout(r, 80));
+    expect(counts()).toEqual(afterFirst);
+  });
+});

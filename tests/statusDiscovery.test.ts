@@ -182,13 +182,31 @@ describe('steady-state read-only (§7 write-frequency promise)', () => {
     const path = join(dir, 'servers.json');
     const beforeMtime = statSync(path).mtimeMs;
     const beforeContent = readFileSync(path, 'utf8');
+    // The robust, filesystem-granularity-independent assertion (review
+    // fix): reuse the same writeFileSync/renameSync spies the atomic-write
+    // mechanism test below already wires via this file's top-level
+    // vi.mock('node:fs', ...). Snapshotted AFTER registerServer's own one
+    // write+rename above, so the delta asserted below covers only the two
+    // liveServers() polls that follow. Zero calls is a hard, deterministic
+    // fact regardless of what timestamp resolution the host filesystem
+    // happens to offer -- unlike mtimeMs, which depends on it (this
+    // machine's APFS turned out to carry sub-millisecond resolution, but
+    // that is a property of this host, not a guarantee).
+    const writesBefore = vi.mocked(fsWriteFileSync).mock.calls.length;
+    const renamesBefore = vi.mocked(fsRenameSync).mock.calls.length;
     // Real clock delay, comfortably above filesystem mtime resolution, so a
     // wrongly-triggered write is guaranteed to land at an observably later
     // mtime rather than being masked by two writes landing in one tick.
+    // Kept alongside the spy-count assertions below as a second signal, not
+    // a substitute -- mtime/content is what an OUTSIDE reader (a real CLI
+    // process) would observe; the spy counts are what makes THIS assertion
+    // immune to the host filesystem's timestamp resolution.
     await new Promise((resolve) => { setTimeout(resolve, 50); });
     const firstPoll = liveServers();
     const secondPoll = liveServers(); // a second poll, as a CLI --watch tick would make
     expect(firstPoll).toEqual(secondPoll);
+    expect(vi.mocked(fsWriteFileSync).mock.calls.length).toBe(writesBefore);
+    expect(vi.mocked(fsRenameSync).mock.calls.length).toBe(renamesBefore);
     expect(statSync(path).mtimeMs).toBe(beforeMtime);
     expect(readFileSync(path, 'utf8')).toBe(beforeContent);
   });
