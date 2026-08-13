@@ -42,4 +42,21 @@ describe('status context', () => {
     );
     expect(r.code).toBe(0);
   });
+
+  it('a throwing onStage callback is swallowed structurally -- callbacks are wrapped at runWithStatus() establishment, so a bare resolver-style read never throws', async () => {
+    // Resolvers (src/resolve/*.ts) call statusCallbacks()?.onStage?.('downloading')
+    // with no local try/catch of their own -- the exact shape reproduced here.
+    // If the guarantee lived only at each reader (run.ts's own try/catch, as
+    // it did before this fix), this bare call would throw straight through
+    // and (in a real resolver) land in that resolver's own catch, turning a
+    // successful download into a synthetic extractor_failed result. Pinning
+    // it here, independent of run()/child_process entirely, proves the fix
+    // is structural: ANY reader gets a non-throwing callback by construction.
+    await runWithStatus(
+      { onStage: () => { throw new Error('reporting must never break work'); } },
+      async () => {
+        expect(() => statusCallbacks()?.onStage?.('downloading')).not.toThrow();
+      },
+    );
+  });
 });

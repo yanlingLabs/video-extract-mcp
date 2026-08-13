@@ -13,10 +13,13 @@ export async function run(
     // re-reading statusCallbacks() themselves, so the report is tied to
     // whichever context (if any) was ambient when this run() call was made
     // -- not whatever happens to be ambient whenever the child eventually
-    // exits.
+    // exits. Called bare, with no local try/catch: runWithStatus()
+    // (src/status/context.ts) already wraps every callback on `status` in a
+    // swallowing proxy at establishment, so that guarantee lives in exactly
+    // one place rather than being duplicated at each reader.
     const status = statusCallbacks();
     if (status?.onSpawn && typeof child.pid === 'number') {
-      try { status.onSpawn(child.pid, cmd); } catch { /* reporting never breaks work */ }
+      status.onSpawn(child.pid, cmd);
     }
     let stdout = '', stderr = '';
     const timer = opts.timeoutMs
@@ -30,12 +33,12 @@ export async function run(
       if (timer) clearTimeout(timer);
       // A spawn that errored still ends -- the child's lifecycle is over,
       // so any observer waiting on onSpawnEnded must be told either way.
-      try { status?.onSpawnEnded?.(); } catch { /* reporting never breaks work */ }
+      status?.onSpawnEnded?.();
       reject(e);
     });
     child.on('close', (code) => {
       if (timer) clearTimeout(timer);
-      try { status?.onSpawnEnded?.(); } catch { /* reporting never breaks work */ }
+      status?.onSpawnEnded?.();
       resolve({ stdout, stderr, code: code ?? -1 });
     });
   });
