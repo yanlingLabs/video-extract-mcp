@@ -31,9 +31,22 @@ const bad = join(tmpdir(), 'norma-lifecycle-proc-does-not-exist', 'nope.mp4');
  *  without it, even pre-fix code exits promptly (nothing was ever armed to
  *  keep the process alive), which is exactly what "no call at all" already
  *  demonstrates in scratch/probe5-linger.mjs and would make this test
- *  useless as a regression guard. */
-function spawnCompleteAndCloseStdin(ttlMs: number, deadlineMs: number): Promise<number | null> {
-  return new Promise((resolve) => {
+ *  useless as a regression guard.
+ *
+ *  `beforeClose` (Task 4 addition, optional -- existing callers are
+ *  unaffected): if given, it is awaited with the call's own JSON result
+ *  text AFTER the response arrives but BEFORE stdin is closed and the exit
+ *  clock starts, so a caller can do its own verification (e.g. fetch the
+ *  status endpoint while the process is still definitely alive) without
+ *  that work counting against the exit-latency measurement below. A thrown
+ *  assertion inside it fails this promise directly (via `reject`), rather
+ *  than depending on unhandled-rejection detection or a slow force-kill
+ *  timeout to surface the failure. */
+function spawnCompleteAndCloseStdin(
+  ttlMs: number, deadlineMs: number,
+  beforeClose?: (resultText: string) => Promise<void>,
+): Promise<number | null> {
+  return new Promise((resolve, reject) => {
     const dest = mkdtempSync(join(tmpdir(), 'norma-lifecycle-proc-'));
     const child = spawn(process.execPath, ['dist/mcp.js'], {
       cwd: process.cwd(),
@@ -58,8 +71,8 @@ function spawnCompleteAndCloseStdin(ttlMs: number, deadlineMs: number): Promise<
       buf = lines.pop() ?? '';
       for (const line of lines) {
         if (!line.trim()) continue;
-        let msg: { id?: number };
-        try { msg = JSON.parse(line) as { id?: number }; } catch { continue; }
+        let msg: { id?: number; result?: { content?: Array<{ type: string; text: string }> } };
+        try { msg = JSON.parse(line) as typeof msg; } catch { continue; }
         if (msg.id === 1) {
           child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n');
           child.stdin.write(JSON.stringify({
@@ -70,9 +83,17 @@ function spawnCompleteAndCloseStdin(ttlMs: number, deadlineMs: number): Promise<
         if (msg.id === 2) {
           // The call completed -- a real terminal-transition cleanup timer
           // is now armed at ttlMs, per the bug this test guards against.
-          // Close stdin and start the clock.
-          eofSentAt = Date.now();
-          child.stdin.end();
+          void (async () => {
+            try {
+              await beforeClose?.(msg.result?.content?.[0]?.text ?? '');
+              // Close stdin and start the clock.
+              eofSentAt = Date.now();
+              child.stdin.end();
+            } catch (e) {
+              child.kill('SIGKILL');
+              if (!settled) { settled = true; reject(e instanceof Error ? e : new Error(String(e))); }
+            }
+          })();
         }
       }
     });
@@ -99,6 +120,36 @@ describe('stdio process lifecycle (final review, Important 3)', () => {
     // hard-kill would catch as "did not exit" (exitedWithinMs === null).
     const DEADLINE_MS = 5000;
     const exitedWithinMs = await spawnCompleteAndCloseStdin(20_000, DEADLINE_MS);
+    expect(exitedWithinMs).not.toBeNull();
+    expect(exitedWithinMs!).toBeLessThan(DEADLINE_MS);
+  }, 15_000);
+
+  it('exits promptly after stdin EOF with the status endpoint up (unref holds) -- Task 4 mandate (B)', async () => {
+    // VIDEO_EXTRACT_STATUS_PORT is deliberately left unset -- statusPortFromEnv()'s
+    // own default (ephemeral port, endpoint ON) is exactly the "up by
+    // default" posture this test needs, no override required. This is the
+    // §10 "endpoint holds the process open" mutant's killing test: every
+    // OTHER status-endpoint test (tests/statusEndpoint.test.ts) talks to the
+    // server via fetch() from WITHIN the same test process, which can only
+    // ever observe response shape/status -- never whether a handle keeps a
+    // REAL, SEPARATE OS process's event loop alive after its own work is
+    // done. That can only be observed exactly the way this file's sibling
+    // test above already does: spawn dist/mcp.js for real, close stdin, and
+    // measure actual process exit. beforeClose proves the endpoint was
+    // genuinely live -- not just "url resolved to something" -- by
+    // performing a real fetch against it BEFORE stdin closes and the exit
+    // clock starts.
+    const DEADLINE_MS = 5000;
+    let fetchedOk = false;
+    const exitedWithinMs = await spawnCompleteAndCloseStdin(20_000, DEADLINE_MS, async (resultText) => {
+      const parsed = JSON.parse(resultText) as { statusUrl: string | null };
+      expect(parsed.statusUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/status$/);
+      const res = await fetch(parsed.statusUrl!);
+      expect(res.status).toBe(200);
+      await res.json();
+      fetchedOk = true;
+    });
+    expect(fetchedOk).toBe(true);
     expect(exitedWithinMs).not.toBeNull();
     expect(exitedWithinMs!).toBeLessThan(DEADLINE_MS);
   }, 15_000);

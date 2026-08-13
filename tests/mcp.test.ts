@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, existsSync, readFileSync } from 'node:fs';
+import { mkdtempSync, existsSync, readFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -496,6 +496,7 @@ describe('resolve_video is exempt from the analyze pool (spec §6)', () => {
     const pool: SlotPool = {
       get running() { return inner.running; },
       get queued() { return inner.queued; },
+      cap: inner.cap,
       run: (fn, onQueued) => inner.run(async () => {
         const r = await fn();
         await new Promise((res) => setTimeout(res, HOLD_PAD_MS));
@@ -557,7 +558,7 @@ describe('plain calls gate through the slot pool (spec §12.2 -- the queue-bypas
     const events: string[] = [];
     const inner = createSlotPool(1);
     const spy: SlotPool = {
-      get running() { return inner.running; }, get queued() { return inner.queued; },
+      get running() { return inner.running; }, get queued() { return inner.queued; }, cap: inner.cap,
       run: (fn, onQ) => inner.run(async () => { events.push('start'); const r = await fn(); events.push('end'); return r; }, onQ),
     };
     const server = buildServer({ analyzeSlots: spy });
@@ -579,4 +580,110 @@ describe('plain calls gate through the slot pool (spec §12.2 -- the queue-bypas
     expect(events).toEqual(['start', 'end', 'start', 'end']);   // strictly sequential
     await client.close();
   }, 30_000);
+});
+
+describe('status channel wiring (Task 4)', () => {
+  /** Shape of client.experimental.tasks.callToolStream()'s yielded messages,
+   *  narrowed to the fields these tests read -- mirrors
+   *  tests/taskLifecycle.test.ts's own inline StreamMsg alias. */
+  type StreamMsg = {
+    type: string;
+    task?: { taskId: string; status: string; statusMessage?: string };
+    result?: { content: Array<{ type: string; text: string }> };
+  };
+
+  it('task handle reply carries the status url; completed result echoes it; endpoint lists the item; destinationPath holds only expected artifacts', async () => {
+    const srcDir = mkdtempSync(join(tmpdir(), 'norma-mcp-status-src-'));
+    const video = await makeTestVideo(join(srcDir, 'v.mp4'), 3);
+    const destDir = mkdtempSync(join(tmpdir(), 'norma-mcp-status-'));
+    const server = buildServer({ statusPort: 0 });
+    const client = await connectClient(server);
+    // callToolStream needs the client's own task-tool cache populated first
+    // -- client.experimental.tasks.isToolTask() reads _cachedKnownTaskTools,
+    // populated only by listTools() (tests/taskLifecycle.test.ts's own
+    // documented gate). This file's shared connectClient deliberately omits
+    // this call (its ~20 other tests only ever make plain client.callTool()
+    // calls, which need no such cache per task-1-report.md's fact (a)), so
+    // it is called here inline instead of widening that shared helper.
+    await client.listTools();
+
+    const stream = client.experimental.tasks.callToolStream({
+      name: 'analyze_video',
+      arguments: { destinationPath: destDir, videos: [{ pathOrUrl: video, frames: 'even', maxFrames: 1, transcript: false }] },
+    }) as AsyncGenerator<StreamMsg>;
+    const first = await stream.next();
+    const firstMsg = first.value as StreamMsg;
+    expect(firstMsg.type).toBe('taskCreated');
+    // src/mcp.ts's createTask handler stamps this BEFORE the background
+    // executor even starts (see its own comment for why), so this is
+    // deterministic, not a race against the executor's first real
+    // statusMessage update.
+    expect(firstMsg.task?.statusMessage).toMatch(/^status: http:\/\/127\.0\.0\.1:\d+\/status$/);
+
+    let finalContent: Array<{ type: string; text: string }> | undefined;
+    for await (const msg of stream) {
+      if (msg.type === 'result') finalContent = msg.result!.content;
+    }
+    expect(finalContent).toBeDefined();
+    const parsed = JSON.parse(finalContent![0]!.text) as {
+      videos: Array<{ status: string }>; statusUrl: string | null;
+    };
+    // Top-level, not per-item: toResult(r, statusUrl) spreads it alongside `videos`.
+    expect(parsed.statusUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/status$/);
+    expect(parsed.videos[0]!.status).toBe('ok');
+
+    const body = await (await fetch(parsed.statusUrl!)).json() as {
+      items: Array<{ url: string; tool: string; outcome?: { status: string } }>;
+    };
+    const item = body.items.find((i) => i.url === video);
+    expect(item).toBeDefined();
+    expect(item!.tool).toBe('analyze');
+    expect(item!.outcome?.status).toBe('ok');
+
+    // §10 "registry writes a file per transition" mutant guard: with a
+    // local source, frames:'even', maxFrames:1, transcript:false, the ONLY
+    // artifacts this call can legitimately produce under destinationPath
+    // are the manifest and its relocated frame image(s) -- flat, basename
+    // preserved (src/agent/analyzeTool.ts's relocateFrame; the local source
+    // itself is never copied in, and transcript:false means no
+    // transcript.json). A registry that wrote a status file per stage
+    // transition anywhere under destinationPath fails this.
+    const entries = readdirSync(destDir);
+    expect(entries.length).toBeGreaterThan(0);
+    for (const name of entries) expect(name).toMatch(/^manifest\.json$|^even_\d{4}\.jpg$/);
+
+    await client.close();
+  }, 30_000);
+
+  it('statusPort null disables the endpoint: no status prefix, statusUrl null, and nothing is listening', async () => {
+    const server = buildServer({ statusPort: null });
+    const client = await connectClient(server);
+    await client.listTools();
+    const badPath = join(tmpdir(), 'norma-mcp-status-disabled-does-not-exist', 'nope.mp4');
+
+    // Plain call: statusUrl must be null in the result, regardless of the item's own outcome.
+    const dir1 = mkdtempSync(join(tmpdir(), 'norma-mcp-status-disabled-'));
+    const content = await callToolOk(client, {
+      name: 'analyze_video',
+      arguments: { destinationPath: dir1, videos: [{ pathOrUrl: badPath }] },
+    });
+    const parsed = JSON.parse(firstText(content)) as { statusUrl: string | null };
+    expect(parsed.statusUrl).toBeNull();
+
+    // Task mode: the taskCreated statusMessage must not carry a status:
+    // prefix -- it should be whatever InMemoryTaskStore.createTask leaves it
+    // as (undefined) rather than this wiring stamping one in.
+    const dir2 = mkdtempSync(join(tmpdir(), 'norma-mcp-status-disabled2-'));
+    const stream = client.experimental.tasks.callToolStream({
+      name: 'analyze_video',
+      arguments: { destinationPath: dir2, videos: [{ pathOrUrl: badPath }] },
+    }) as AsyncGenerator<StreamMsg>;
+    const first = await stream.next();
+    const firstMsg = first.value as StreamMsg;
+    expect(firstMsg.type).toBe('taskCreated');
+    expect(firstMsg.task?.statusMessage ?? '').not.toMatch(/^status:/);
+    for await (const _msg of stream) { /* drain so nothing is left dangling */ }
+
+    await client.close();
+  }, 15_000);
 });

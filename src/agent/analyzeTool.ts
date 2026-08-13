@@ -4,7 +4,7 @@ import type { AnalyzeStage, FrameMode, Manifest, Transcript } from '../types.js'
 import { analyzeVideo } from '../analyze.js';
 import { buildManifest } from '../manifest.js';
 import { writeManifest, writeTranscript } from './artifacts.js';
-import { runWithStatus } from '../status/context.js';
+import { runWithStatus, safe } from '../status/context.js';
 
 /** Above this, the transcript goes to disk only -- a long transcript is
  *  exactly the payload destinationPath exists to keep out of context. */
@@ -260,7 +260,21 @@ export async function analyzeVideoTool(
             onSpawn: (pid, cmd) => hooks?.onSpawn?.(i, pid, cmd),
             onSpawnEnded: () => hooks?.onSpawnEnded?.(i),
           },
-          () => analyzeOneVideo(item, itemDir(args.destinationPath, i, n), (s) => hooks?.onStage?.(i, s)),
+          // Task 4 mandate (A): this bridges analyzeOneVideo's OWN onStage
+          // parameter (the pre-existing 'resolving'/'transcribing'/'frames'
+          // thread, independent of the runWithStatus() context established
+          // just above) straight to hooks.onStage -- a caller-supplied
+          // callback, now a REAL one (the status registry) as of this task.
+          // Routed DIRECTLY, not through statusCallbacks(), so it was never
+          // covered by Task 2's safe()-at-establishment fix: a throwing
+          // hooks.onStage here reaches analyzeVideo's own opts.onStage?.()
+          // call unguarded, which src/analyze.ts invokes as the first
+          // statement of its OWN try block -- the throw is absorbed there
+          // into a normal-looking status:'extractor_failed' Manifest, not a
+          // rejection, silently turning a legitimate analysis into a
+          // reported failure. safe() (src/status/context.ts) closes this the
+          // same way runWithStatus() already closes the context path.
+          () => analyzeOneVideo(item, itemDir(args.destinationPath, i, n), safe((s: AnalyzeStage) => hooks?.onStage?.(i, s))),
         );
       },
       (ahead) => hooks?.onQueued?.(i, ahead),

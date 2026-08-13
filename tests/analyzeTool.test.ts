@@ -346,6 +346,36 @@ describe('batching (spec §3-§5)', () => {
     expect(queued).toContainEqual([1, 1]);
   });
 
+  it('a hooks.onStage that throws on "resolving" does not turn an otherwise-fine analyze call into extractor_failed (Task 4 mandate A)', async () => {
+    // analyzeOneVideo's own onStage parameter -- the bridge lambda at
+    // analyzeTool.ts's analyzeVideoTool, `safe((s) => hooks?.onStage?.(i, s))`
+    // -- is a SEPARATE threading path from the runWithStatus() context used
+    // just above it (already safe() by construction since Task 2). Before
+    // Task 4, that lambda was bare: `(s) => hooks?.onStage?.(i, s)`, calling
+    // a caller-supplied hook directly with no guard. The real src/analyze.ts
+    // calls `opts.onStage?.('resolving')` as the FIRST statement of its own
+    // try block with no local try/catch of its own -- a throw there is
+    // absorbed by analyze.ts's OWN catch into a normal-looking, non-rejecting
+    // Manifest with status:'extractor_failed', silently turning a
+    // legitimate analysis into a reported failure (Task 2's review found and
+    // routed this exact class here). This mock reproduces that same call
+    // shape (`opts.onStage?.('resolving')`, unguarded) directly, so a
+    // pre-fix bare lambda would let the mock's own promise reject here and
+    // land in analyzeOneVideo's outer catch instead -- a different absorber
+    // than the real analyze.ts, but the SAME observable bug this test pins:
+    // status flips to extractor_failed instead of staying ok.
+    analyzeMock.mockImplementation(async (url: string, opts: { onStage?: (s: string) => void }) => {
+      opts?.onStage?.('resolving');
+      return manifest({ source: { url, platform: 'p', title: 'T', duration: 10, resolvedBy: 'ytdlp', status: 'ok', filePath: '/x/work.mp4' } });
+    });
+    const dir = mkdtempSync(join(tmpdir(), 'norma-throwing-onstage-'));
+    const r = await analyzeVideoTool(
+      { destinationPath: dir, videos: [{ pathOrUrl: 'https://x.test/a' }] },
+      { onStage: (_i, s) => { if (s === 'resolving') throw new Error('reporting must never break work'); } },
+    );
+    expect(r.videos[0]!.status).toBe('ok');
+  });
+
   it('N=2: one item genuinely rejects (not a failure status) and the sibling still lands ok -- per-item no-throw guarantee holds at N=2', async () => {
     // Distinct from the 'partial failure' test above, which mocks analyzeVideo
     // resolving to a status-carrying failure manifest. Here analyzeVideo itself

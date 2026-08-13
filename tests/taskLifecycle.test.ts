@@ -66,6 +66,7 @@ function paddedCap1Pool(padMs: number): SlotPool {
   return {
     get running() { return inner.running; },
     get queued() { return inner.queued; },
+    cap: inner.cap,
     run: (fn, onQueued) => inner.run(async () => {
       const r = await fn();
       await sleep(padMs);

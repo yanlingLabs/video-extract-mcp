@@ -8,6 +8,7 @@ export interface SlotPool {
   run<T>(fn: () => Promise<T>, onQueued?: (ahead: number) => void): Promise<T>;
   readonly running: number;
   readonly queued: number;
+  readonly cap: number;
 }
 
 interface Waiter { start: () => void; onQueued?: (ahead: number) => void }
@@ -38,6 +39,7 @@ export function createSlotPool(max: number): SlotPool {
   return {
     get running() { return running; },
     get queued() { return waiters.length; },
+    cap: max,
     run<T>(fn: () => Promise<T>, onQueued?: (ahead: number) => void): Promise<T> {
       return new Promise<T>((resolve, reject) => {
         // Ordering: running-- MUST come before resolve/reject/pump().

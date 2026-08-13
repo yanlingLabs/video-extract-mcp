@@ -25,8 +25,18 @@ const als = new AsyncLocalStorage<StatusCallbacks>();
  *  place this guarantee is enforced, once, at establishment, rather than
  *  duplicated at every statusCallbacks() read site (run.ts, the three
  *  resolver emits, and any future one). `undefined` stays `undefined`, so
- *  `status?.onSpawn` optional-chaining at call sites is unaffected. */
-function safe<A extends unknown[]>(fn?: (...a: A) => void): ((...a: A) => void) | undefined {
+ *  `status?.onSpawn` optional-chaining at call sites is unaffected.
+ *
+ *  Exported (Task 4): analyzeTool.ts's own analyzeOneVideo onStage bridge
+ *  (`(s) => hooks?.onStage?.(i, s)`, analyzeVideoTool's per-item closure) is
+ *  a SEPARATE threading mechanism from the status context above -- it feeds
+ *  analyzeVideo's own opts.onStage directly, driving 'resolving'/
+ *  'transcribing'/'frames', and was never routed through runWithStatus() at
+ *  all (Task 2's report flagged this exact gap and routed the fix here).
+ *  Reusing this same helper there, rather than duplicating the try/catch
+ *  shape, keeps "a throwing reporting callback never breaks work" ONE
+ *  guarantee with one implementation, not two that could drift. */
+export function safe<A extends unknown[]>(fn?: (...a: A) => void): ((...a: A) => void) | undefined {
   return fn ? (...a: A) => { try { fn(...a); } catch { /* reporting never breaks work */ } } : undefined;
 }
 

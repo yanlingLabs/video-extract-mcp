@@ -4,15 +4,23 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { InMemoryTaskStore } from '@modelcontextprotocol/sdk/experimental/tasks/stores/in-memory.js';
 import type { CallToolResult, Task } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
-import { analyzeVideoTool, type AnalyzeToolArgs } from './agent/analyzeTool.js';
+import { analyzeVideoTool, itemDir, type AnalyzeToolArgs, type AnalyzeToolResult } from './agent/analyzeTool.js';
 import { resolveVideoTool, type ResolveToolArgs } from './agent/resolveTool.js';
 import { createSlotPool, analyzeConcurrencyFromEnv, taskTtlMsFromEnv, type SlotPool } from './agent/slots.js';
+import { createStatusRegistry, type StatusRegistry } from './status/registry.js';
+import { startStatusEndpoint, statusPortFromEnv } from './status/endpoint.js';
 import { isMainModule } from './util/entry.js';
 
 export const TOOL_NAMES = ['resolve_video', 'analyze_video'] as const;
 
-const toResult = (r: unknown): CallToolResult =>
-  ({ content: [{ type: 'text', text: JSON.stringify(r, null, 2) }] });
+// Task 4: statusUrl is a TOP-LEVEL field on every completed result (not
+// per-item) -- `null` when the endpoint is disabled. `null`, unlike
+// `undefined`, survives JSON.stringify, which is what makes "statusUrl:
+// null when disabled" actually reach the wire rather than being silently
+// dropped as an absent key. Required, not optional, so a future call site
+// cannot forget to pass it and silently omit the field.
+const toResult = <T extends object>(r: T, statusUrl: string | null): CallToolResult =>
+  ({ content: [{ type: 'text', text: JSON.stringify({ ...r, statusUrl }, null, 2) }] });
 
 const PLATFORMS =
   'Known-working sources: YouTube, TikTok, Facebook and Reels, X/Twitter, Instagram, '
@@ -277,11 +285,32 @@ class HonestCancelStore extends InMemoryTaskStore {
 type Store = HonestCancelStore;
 const label = (i: number, n: number, msg: string) => (n === 1 ? msg : `video ${i + 1}/${n}: ${msg}`);
 
+/**
+ * Task 4: registers every item up front, before any execution starts, so
+ * the SAME ids array is visible both to the per-item hook wiring below AND
+ * to createTask's own outer .catch() -- which needs it to finish() registry
+ * entries even when the whole call rejects (wrapper breakage, or a
+ * queued-cancel that leaves items registered but never run -- see the
+ * .catch() at each createTask call site below). destinationPath per item is
+ * the item's OWN working directory (itemDir), not the shared parent
+ * destinationPath, so the endpoint's workDirBytes sampling reflects each
+ * item alone in a batch rather than the whole call's combined footprint.
+ */
+function registerItems(
+  statusRegistry: StatusRegistry, tool: 'analyze' | 'resolve', destinationPath: string,
+  urls: string[], taskId: string,
+): number[] {
+  const n = urls.length;
+  return urls.map((url, i) => statusRegistry.register({
+    url, tool, taskId, destinationPath: itemDir(destinationPath, i, n),
+  }));
+}
+
 function runAnalyzeExecution(
-  args: AnalyzeToolArgs, pool: SlotPool,
+  args: AnalyzeToolArgs, pool: SlotPool, statusRegistry: StatusRegistry, ids: number[],
   onUpdate?: (message: string) => void, onItemStart?: (itemIndex: number) => void,
   checkCancelled?: () => Promise<boolean>,
-): Promise<import('./agent/analyzeTool.js').AnalyzeToolResult> {
+): Promise<AnalyzeToolResult> {
   const n = args.videos.length;
   return analyzeVideoTool(args, {
     run: (fn, onQueued) => pool.run(async () => {
@@ -297,8 +326,13 @@ function runAnalyzeExecution(
       if (await checkCancelled?.()) throw new TaskCancelledError();
       return fn();
     }, onQueued),
-    onStage: (i, s) => onUpdate?.(label(i, n, s)),
+    // Task 4: onStage ALSO mirrors into the status registry -- two readers
+    // of the one event, not a replacement for the existing statusMessage
+    // mapping (the brief's own "two readers, one event" framing).
+    onStage: (i, s) => { statusRegistry.stage(ids[i]!, s); onUpdate?.(label(i, n, s)); },
     onQueued: (i, ahead) => onUpdate?.(label(i, n, `queued, ${ahead} ahead`)),
+    onSpawn: (i, pid, cmd) => statusRegistry.spawn(ids[i]!, pid, cmd),
+    onSpawnEnded: (i) => statusRegistry.spawnEnded(ids[i]!),
   });
 }
 
@@ -321,9 +355,30 @@ function runAnalyzeExecution(
  * `@experimental` API, which is why the SDK dependency is pinned to an
  * exact version rather than a caret range (spec §10).
  */
-export function buildServer(opts?: { analyzeSlots?: SlotPool }): McpServer {
+export function buildServer(opts?: { analyzeSlots?: SlotPool; statusPort?: number | null }): McpServer {
   const pool = opts?.analyzeSlots ?? createSlotPool(analyzeConcurrencyFromEnv());
   const store: Store = new HonestCancelStore();
+  // Task 4: per-server instances -- same no-module-state rule `store`/`pool`
+  // already follow. `opts.statusPort` (test seam) overrides the env reader
+  // when explicitly provided (including `null`, hence the `!== undefined`
+  // check rather than `??`); left unset, `statusPortFromEnv()` decides
+  // (default: ephemeral port, endpoint ON). The endpoint's own `version`
+  // ('0.3.0') matches the brief's snippet -- the version this whole plan
+  // ships under -- rather than McpServer's construction just below, which
+  // still reads '0.2.0' (package.json's current published version); this
+  // mismatch is pre-existing in the brief itself, not introduced here (see
+  // the task report's "anything wrong in the brief" section).
+  const statusRegistry: StatusRegistry = createStatusRegistry();
+  const statusEndpoint = startStatusEndpoint(
+    statusRegistry,
+    {
+      pid: process.pid,
+      version: '0.3.0',
+      startedAt: Date.now(),
+      concurrency: () => ({ cap: pool.cap, running: pool.running, queued: pool.queued }),
+    },
+    opts?.statusPort !== undefined ? opts.statusPort : statusPortFromEnv(),
+  );
   const server = new McpServer(
     { name: 'norma-video', version: '0.2.0' },
     {
@@ -375,10 +430,36 @@ export function buildServer(opts?: { analyzeSlots?: SlotPool }): McpServer {
         // ~150ms -- still nonzero (honestly documented in README.md's
         // Background tasks section), but no longer close to a full second.
         const task = await extra.taskStore.createTask({ ttl: taskTtlMsFromEnv(), pollInterval: 150 });
+        // Task 4: stamp the status url into the HANDLE reply, before the
+        // background executor below is even started -- not "after", despite
+        // the brief's own looser phrasing. shared/protocol.js's
+        // requestStream() yields 'taskCreated' with EXACTLY this handler's
+        // RETURNED task object (verified directly against the installed
+        // SDK: no further server- or client-side re-fetch happens in
+        // between), so whatever is stamped here is what a task-mode
+        // caller's first message shows, deterministically -- not a race
+        // against the executor's own first onUpdate() call, which writes
+        // statusMessage on the same task row once real progress exists.
+        // Running this BEFORE the `void (async () => {...})()` below still
+        // executes strictly before the client can ever learn this taskId
+        // (createTask's own handler has not returned yet either way), so
+        // the honest-cancellation ordering invariant documented at
+        // onItemStart below is unaffected by moving this here.
+        const su = await statusEndpoint.url;
+        let handleTask = task;
+        if (su !== null) {
+          await extra.taskStore.updateTaskStatus(task.taskId, 'working', `status: ${su}`);
+          handleTask = (await extra.taskStore.getTask(task.taskId)) ?? task;
+        }
+        const typedArgs = args as AnalyzeToolArgs;
+        const ids = registerItems(
+          statusRegistry, 'analyze', typedArgs.destinationPath,
+          typedArgs.videos.map((v) => v.pathOrUrl), task.taskId,
+        );
         void (async () => {
           try {
             const r = await runAnalyzeExecution(
-              args as AnalyzeToolArgs, pool,
+              typedArgs, pool, statusRegistry, ids,
               (m) => void extra.taskStore.updateTaskStatus(task.taskId, 'working', m).catch(() => {}),
               () => { store.executing.add(task.taskId); },
               async () => {
@@ -403,9 +484,27 @@ export function buildServer(opts?: { analyzeSlots?: SlotPool }): McpServer {
                 if (cancelled) store.executing.delete(task.taskId);
                 return cancelled;
               },
-            );
+            ).catch((e: unknown) => {
+              // Task 4: whatever ids were registered above never reached a
+              // per-item finish() below -- either genuine wrapper breakage,
+              // or every item throwing TaskCancelledError because the whole
+              // task was cancelled before any item started. HonestCancelStore
+              // refuses a cancel once ANY item has started (store.executing),
+              // so those two are the ONLY ways this promise can reject --
+              // never a mix of some items genuinely completed and others
+              // still registered-but-unfinished. Finishing all of them here
+              // unconditionally is what stops a cancelled batch from pinning
+              // unevictable 'running'-forever ghosts in the registry
+              // (enforceCap never evicts an item without an outcome) --
+              // re-thrown unchanged so the existing catch below (which still
+              // needs to tell TaskCancelledError apart from a real crash)
+              // is untouched.
+              ids.forEach((id) => statusRegistry.finish(id, 'wrapper_failed'));
+              throw e;
+            });
+            r.videos.forEach((v, i) => statusRegistry.finish(ids[i]!, v.status));
             try {
-              await extra.taskStore.storeTaskResult(task.taskId, 'completed', toResult(r));
+              await extra.taskStore.storeTaskResult(task.taskId, 'completed', toResult(r, su));
             } catch {
               // Post-ordering-fix (see the comment above runAnalyzeExecution),
               // a genuine cancellation race is closed here: onItemStart marks
@@ -438,7 +537,7 @@ export function buildServer(opts?: { analyzeSlots?: SlotPool }): McpServer {
             store.executing.delete(task.taskId);
           }
         })();
-        return { task };
+        return { task: handleTask };
       },
       getTask: async (_args, extra) => extra.taskStore.getTask(extra.taskId),
       getTaskResult: async (_args, extra) => (await extra.taskStore.getTaskResult(extra.taskId)) as CallToolResult,
@@ -485,6 +584,28 @@ export function buildServer(opts?: { analyzeSlots?: SlotPool }): McpServer {
         // the full rationale): same pollInterval, same ~1000ms -> ~150ms
         // plain-call floor reduction.
         const task = await extra.taskStore.createTask({ ttl: taskTtlMsFromEnv(), pollInterval: 150 });
+        // Task 4: same statusUrl stamp as analyze_video's own createTask
+        // above -- see that handler's comment for why this runs BEFORE the
+        // executor IIFE (determinism against the brief's own taskCreated
+        // assertion) and why it does not disturb the "before any await"
+        // executing-mark invariant the comment just below still documents
+        // (this still runs strictly before the client can learn the taskId
+        // at all, since createTask's own handler has not returned yet).
+        // Unlike analyze_video, resolve_video has no onUpdate/statusMessage
+        // mechanism of its own today -- no stage-by-stage progress messages
+        // are wired for it -- so this is the ONLY statusMessage this
+        // handler ever writes; nothing later overwrites it.
+        const su = await statusEndpoint.url;
+        let handleTask = task;
+        if (su !== null) {
+          await extra.taskStore.updateTaskStatus(task.taskId, 'working', `status: ${su}`);
+          handleTask = (await extra.taskStore.getTask(task.taskId)) ?? task;
+        }
+        const typedArgs = args as ResolveToolArgs;
+        const ids = registerItems(
+          statusRegistry, 'resolve', typedArgs.destinationPath,
+          typedArgs.videos.map((v) => v.url), task.taskId,
+        );
         void (async () => {
           // First statement, before any await -- the client cannot even
           // learn this taskId (createTask's own handler hasn't returned
@@ -493,9 +614,22 @@ export function buildServer(opts?: { analyzeSlots?: SlotPool }): McpServer {
           // cancel could land before this mark takes effect.
           store.executing.add(task.taskId);
           try {
-            const r = await resolveVideoTool(args as ResolveToolArgs);
+            const r = await resolveVideoTool(typedArgs, {
+              onStage: (i, s) => statusRegistry.stage(ids[i]!, s),
+              onSpawn: (i, pid, cmd) => statusRegistry.spawn(ids[i]!, pid, cmd),
+              onSpawnEnded: (i) => statusRegistry.spawnEnded(ids[i]!),
+            }).catch((e: unknown) => {
+              // Task 4: same reasoning as analyze_video's own catch above --
+              // resolve_video never queues, so every rejection here is a
+              // genuine wrapper breakage (there is no queued-cancel path to
+              // distinguish it from); finish what's registered so it cannot
+              // pin an unevictable 'running'-forever ghost in the registry.
+              ids.forEach((id) => statusRegistry.finish(id, 'wrapper_failed'));
+              throw e;
+            });
+            r.videos.forEach((v, i) => statusRegistry.finish(ids[i]!, v.status));
             try {
-              await extra.taskStore.storeTaskResult(task.taskId, 'completed', toResult(r));
+              await extra.taskStore.storeTaskResult(task.taskId, 'completed', toResult(r, su));
             } catch {
               // Defensive, mirroring analyze_video's own guard (see its
               // createTask handler above): a refused write here means the
@@ -516,7 +650,7 @@ export function buildServer(opts?: { analyzeSlots?: SlotPool }): McpServer {
             store.executing.delete(task.taskId);
           }
         })();
-        return { task };
+        return { task: handleTask };
       },
       getTask: async (_args, extra) => extra.taskStore.getTask(extra.taskId),
       getTaskResult: async (_args, extra) => (await extra.taskStore.getTaskResult(extra.taskId)) as CallToolResult,

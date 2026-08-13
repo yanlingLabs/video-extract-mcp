@@ -7,6 +7,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 describe('createSlotPool', () => {
   it('runs at most max functions concurrently and queues the rest FIFO', async () => {
     const pool = createSlotPool(2);
+    expect(pool.cap).toBe(2);   // Task 4: exposes the pool's own max, for the status endpoint's concurrencyCap
     let live = 0, peak = 0;
     const order: number[] = [];
     const job = (i: number, ms: number) => pool.run(async () => {
