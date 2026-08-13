@@ -488,17 +488,31 @@ export function buildServer(opts?: { analyzeSlots?: SlotPool; statusPort?: numbe
               // Task 4: whatever ids were registered above never reached a
               // per-item finish() below -- either genuine wrapper breakage,
               // or every item throwing TaskCancelledError because the whole
-              // task was cancelled before any item started. HonestCancelStore
-              // refuses a cancel once ANY item has started (store.executing),
-              // so those two are the ONLY ways this promise can reject --
-              // never a mix of some items genuinely completed and others
-              // still registered-but-unfinished. Finishing all of them here
-              // unconditionally is what stops a cancelled batch from pinning
-              // unevictable 'running'-forever ghosts in the registry
-              // (enforceCap never evicts an item without an outcome) --
-              // re-thrown unchanged so the existing catch below (which still
-              // needs to tell TaskCancelledError apart from a real crash)
-              // is untouched.
+              // task was cancelled while every item was still queued.
+              // HonestCancelStore refuses a cancel once ANY item has started
+              // (store.executing), so those two are the ONLY ways this
+              // promise can reject -- never a mix of some items genuinely
+              // completed and others still registered-but-unfinished.
+              //
+              // Corrected per review: this fires EVENTUALLY, not
+              // immediately. For a queued-cancel, the promise only rejects
+              // once each item finally reaches its own slot and
+              // checkCancelled() runs -- bounded by however long the pool
+              // stays saturated ahead of it (proportional to queue depth,
+              // not instant). Until then, those ids sit at outcome:
+              // undefined -- STALE, indistinguishable from a healthy queued
+              // item, but self-healing: the pool draining is exactly what
+              // triggers this .catch(). What finish() here prevents is the
+              // PERMANENT case -- without it, once this promise finally
+              // does settle, those ids would sit at outcome: undefined
+              // forever (enforceCap never evicts an item without an
+              // outcome). Pinned by tests/mcp.test.ts's "a
+              // queued-then-cancelled batch eventually finishes its
+              // registry entries" test, which asserts both the transient
+              // stale window and the eventual healed state via bounded
+              // polling, not a fixed sleep. Re-thrown unchanged so the
+              // existing catch below (which still needs to tell
+              // TaskCancelledError apart from a real crash) is untouched.
               ids.forEach((id) => statusRegistry.finish(id, 'wrapper_failed'));
               throw e;
             });

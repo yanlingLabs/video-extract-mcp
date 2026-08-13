@@ -686,4 +686,115 @@ describe('status channel wiring (Task 4)', () => {
 
     await client.close();
   }, 15_000);
+
+  it('a queued-then-cancelled batch eventually finishes its registry entries as wrapper_failed -- not a permanent gap (review fix)', async () => {
+    // Coordinator review finding: src/mcp.ts's ids.forEach(...finish(...,
+    // 'wrapper_failed')) blocks had ZERO test coverage -- deleting both left
+    // every pre-existing test green. This pins the mechanism directly: a
+    // saturated cap-1 pool, a 2-item batch cancelled while fully queued
+    // (both items, so the forEach is proven to cover every registered id,
+    // not just the first), and a BOUNDED POLL (never a fixed sleep, so this
+    // cannot flake on a slow machine) proving the registry entries
+    // EVENTUALLY reach outcome.status:'wrapper_failed' once the pool drains
+    // far enough for each item to reach its own slot and checkCancelled()
+    // to fire -- exactly the "eventual, self-healing, not a permanent
+    // ghost" behavior the reworded .catch() comment now documents (the
+    // earlier wording overstated immediacy/permanence -- see the task
+    // report's fix round).
+    const HOLD_PAD_MS = 1200;
+    const inner = createSlotPool(1);
+    const pool: SlotPool = {
+      get running() { return inner.running; },
+      get queued() { return inner.queued; },
+      cap: inner.cap,
+      run: (fn, onQueued) => inner.run(async () => {
+        const r = await fn();
+        await new Promise((res) => setTimeout(res, HOLD_PAD_MS));
+        return r;
+      }, onQueued),
+    };
+    const server = buildServer({ statusPort: 0, analyzeSlots: pool });
+    const client = await connectClient(server);
+    await client.listTools();
+
+    // Task A: occupies the pool's only slot for HOLD_PAD_MS after its own
+    // near-instant (fast-failing local path) work resolves.
+    const badA = join(tmpdir(), 'norma-mcp-wf-a-does-not-exist', 'nope.mp4');
+    const destA = mkdtempSync(join(tmpdir(), 'norma-mcp-wf-a-'));
+    const streamA = client.experimental.tasks.callToolStream({
+      name: 'analyze_video',
+      arguments: { destinationPath: destA, videos: [{ pathOrUrl: badA }] },
+    }) as AsyncGenerator<StreamMsg>;
+    const firstA = await streamA.next();
+    expect((firstA.value as StreamMsg).type).toBe('taskCreated');
+    // Give the detached task executor a moment to synchronously reach
+    // pool.run() and genuinely acquire the slot (this file's own
+    // established precedent -- see "resolve_video is exempt..." above).
+    await new Promise((res) => setTimeout(res, 100));
+    expect(pool.running).toBe(1);
+
+    // Task B: a 2-item batch submitted while A holds the only slot -- both
+    // items genuinely queue, neither starts. Queueing decisions happen
+    // synchronously inside pool.run(), before createTask's own handler
+    // returns (this file's "a queued task cancels fully" precedent in
+    // tests/taskLifecycle.test.ts), so this is deterministic, not a race.
+    const badB1 = join(tmpdir(), 'norma-mcp-wf-b1-does-not-exist', 'nope.mp4');
+    const badB2 = join(tmpdir(), 'norma-mcp-wf-b2-does-not-exist', 'nope.mp4');
+    const destB = mkdtempSync(join(tmpdir(), 'norma-mcp-wf-b-'));
+    const streamB = client.experimental.tasks.callToolStream({
+      name: 'analyze_video',
+      arguments: { destinationPath: destB, videos: [{ pathOrUrl: badB1 }, { pathOrUrl: badB2 }] },
+    }) as AsyncGenerator<StreamMsg>;
+    const firstB = await streamB.next();
+    const firstBMsg = firstB.value as StreamMsg;
+    expect(firstBMsg.type).toBe('taskCreated');
+    const taskIdB = firstBMsg.task!.taskId;
+    expect(pool.queued).toBe(2);
+
+    const urlMatch = /^status: (http:\/\/127\.0\.0\.1:\d+\/status)$/.exec(firstBMsg.task?.statusMessage ?? '');
+    expect(urlMatch).not.toBeNull();
+    const statusUrl = urlMatch![1]!;
+
+    // Cancel B while fully queued -- accepted (store.executing has no entry
+    // for B yet; neither item has started).
+    const cancelOutcome = await client.experimental.tasks.cancelTask(taskIdB).then(
+      () => ({ ok: true as const }),
+      (e: unknown) => ({ ok: false as const, e: String(e) }),
+    );
+    expect(cancelOutcome.ok).toBe(true);
+
+    // Immediately after cancellation, B's registry entries are NOT yet
+    // finished -- still outcome: undefined, indistinguishable from a
+    // healthy queued item, because A still holds the pool's only slot. This
+    // is the transient STALE window the reworded .catch() comment now
+    // documents explicitly, instead of the earlier "permanent ghost" framing
+    // the review found overstated.
+    const soonBody = await (await fetch(statusUrl)).json() as {
+      items: Array<{ url: string; outcome?: { status: string } }>;
+    };
+    const soonB = soonBody.items.filter((i) => i.url === badB1 || i.url === badB2);
+    expect(soonB).toHaveLength(2);
+    for (const item of soonB) expect(item.outcome).toBeUndefined();
+
+    // Bounded-retry poll (never a fixed sleep) until the pool drains past A,
+    // B's queued items are promoted, each individually detects the
+    // cancellation via checkCancelled(), and the .catch() finishes ALL of
+    // B's registered ids -- proving the mechanism actually fires, not
+    // merely that no prior test happened to exercise it.
+    let finalItems: Array<{ url: string; outcome?: { status: string } }> = [];
+    for (let i = 0; i < 100; i++) {
+      const body = await (await fetch(statusUrl)).json() as {
+        items: Array<{ url: string; outcome?: { status: string } }>;
+      };
+      finalItems = body.items.filter((it) => it.url === badB1 || it.url === badB2);
+      if (finalItems.length === 2 && finalItems.every((it) => it.outcome !== undefined)) break;
+      await new Promise((res) => setTimeout(res, 100));
+    }
+    expect(finalItems).toHaveLength(2);
+    for (const item of finalItems) expect(item.outcome?.status).toBe('wrapper_failed');
+
+    // Drain A to its own natural completion so nothing lingers.
+    for await (const _msg of streamA) { /* drain to completion */ }
+    await client.close();
+  }, 30_000);
 });
