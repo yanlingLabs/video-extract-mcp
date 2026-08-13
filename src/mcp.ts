@@ -9,6 +9,7 @@ import { resolveVideoTool, type ResolveToolArgs } from './agent/resolveTool.js';
 import { createSlotPool, analyzeConcurrencyFromEnv, taskTtlMsFromEnv, type SlotPool } from './agent/slots.js';
 import { createStatusRegistry, type StatusRegistry } from './status/registry.js';
 import { startStatusEndpoint, statusPortFromEnv } from './status/endpoint.js';
+import { registerServer, unregisterServer } from './status/discovery.js';
 import { isMainModule } from './util/entry.js';
 
 export const TOOL_NAMES = ['resolve_video', 'analyze_video'] as const;
@@ -336,6 +337,52 @@ function runAnalyzeExecution(
   });
 }
 
+// Task 5: the version string stamped into BOTH the status endpoint's own
+// `StatusServerInfo` (below) and the discovery registry's `ServerEntry` --
+// factored into one constant, rather than two independent '0.3.0' literals,
+// specifically so a future edit to one cannot silently drift from the
+// other; the two describe the exact same server. (Task 4's own report
+// already flags a separate, pre-existing mismatch against McpServer's own
+// `serverInfo.version` below, still '0.2.0' -- deferred to Task 7, not
+// touched here.)
+const STATUS_VERSION = '0.3.0';
+
+// Task 5: cross-session discovery (src/status/discovery.ts). Installed at
+// most ONCE per OS process no matter how many times buildServer() runs --
+// the existing test suite alone calls it 35+ times across
+// tests/mcp.test.ts and tests/taskLifecycle*.test.ts, all inside the same
+// process. A second install would mean N duplicate 'exit' listeners (each
+// harmlessly re-filtering an already-filtered list) and N duplicate
+// SIGINT/SIGTERM listeners each independently calling process.exit(0) --
+// wasteful, and the kind of listener-accumulation Node warns about past 10.
+//
+// Guarded with a plain module-level flag rather than e.g. `once: true`
+// event options, because THREE listeners (exit + SIGINT + SIGTERM) need to
+// go up together exactly once, not independently.
+//
+// The 'exit' handler runs synchronously by Node's own contract -- no async
+// work is possible inside an 'exit' listener at all -- which is exactly
+// what unregisterServer's all-sync-fs-calls implementation provides.
+// SIGINT/SIGTERM call process.exit() explicitly: registering a listener for
+// either suppresses Node's default terminate-the-process behavior, so
+// without an explicit exit() call the process would hang waiting for
+// something else to end it. Verified empirically (see task report) that a
+// bare SIGINT/SIGTERM listener does NOT, on its own, keep the event loop
+// alive the way an active timer or socket handle would -- Node's internal
+// signal watcher is unref'd -- so installing these cannot reintroduce the
+// 0.2.0 zombie-process class tests/mcpProcessLifecycle.test.ts guards
+// against, and does not interfere with that file's own stdin-EOF exit path
+// (a different signal entirely).
+let discoveryExitHandlersInstalled = false;
+function installDiscoveryExitHandlersOnce(): void {
+  if (discoveryExitHandlersInstalled) return;
+  discoveryExitHandlersInstalled = true;
+  process.on('exit', () => { unregisterServer(process.pid); });
+  const onTerminatingSignal = (): void => { process.exit(0); };
+  process.on('SIGINT', onTerminatingSignal);
+  process.on('SIGTERM', onTerminatingSignal);
+}
+
 /**
  * Exposes the finished engine to AI agents over MCP. Both tools are
  * registered with `server.experimental.tasks.registerToolTask` (not the
@@ -363,22 +410,55 @@ export function buildServer(opts?: { analyzeSlots?: SlotPool; statusPort?: numbe
   // when explicitly provided (including `null`, hence the `!== undefined`
   // check rather than `??`); left unset, `statusPortFromEnv()` decides
   // (default: ephemeral port, endpoint ON). The endpoint's own `version`
-  // ('0.3.0') matches the brief's snippet -- the version this whole plan
-  // ships under -- rather than McpServer's construction just below, which
-  // still reads '0.2.0' (package.json's current published version); this
-  // mismatch is pre-existing in the brief itself, not introduced here (see
-  // the task report's "anything wrong in the brief" section).
+  // (STATUS_VERSION, '0.3.0') matches the brief's snippet -- the version
+  // this whole plan ships under -- rather than McpServer's construction
+  // just below, which still reads '0.2.0' (package.json's current
+  // published version); this mismatch is pre-existing in the brief itself,
+  // not introduced here (see the task report's "anything wrong in the
+  // brief" section).
+  //
+  // Task 5: `startedAt` captured once, here, rather than calling Date.now()
+  // separately for the endpoint's StatusServerInfo and for the discovery
+  // registry's ServerEntry below -- both describe the SAME server starting
+  // at the SAME instant, and two independent Date.now() calls would (very
+  // slightly, but needlessly) disagree.
+  const startedAt = Date.now();
   const statusRegistry: StatusRegistry = createStatusRegistry();
   const statusEndpoint = startStatusEndpoint(
     statusRegistry,
     {
       pid: process.pid,
-      version: '0.3.0',
-      startedAt: Date.now(),
+      version: STATUS_VERSION,
+      startedAt,
       concurrency: () => ({ cap: pool.cap, running: pool.running, queued: pool.queued }),
     },
     opts?.statusPort !== undefined ? opts.statusPort : statusPortFromEnv(),
   );
+  // Task 5: cross-session discovery (src/status/discovery.ts) -- registers
+  // this server into the discovery file once its ephemeral port is known,
+  // so a CLI on the same machine can find and merge every live server's
+  // status, not just whichever one it happens to be talking to. Registered
+  // only when the endpoint actually resolves to a live URL (a disabled
+  // endpoint -- VIDEO_EXTRACT_STATUS_PORT=0 -- has no port for a CLI to
+  // reach, so it has nothing to register); the exit-handler install is
+  // guarded the same way, one level up (installDiscoveryExitHandlersOnce),
+  // so a server built with the endpoint disabled never burns that guard for
+  // a later, live one built in the same process.
+  //
+  // Fire-and-forget: buildServer() itself must stay synchronous (35+
+  // existing call sites across the test suite depend on getting a
+  // McpServer back, not a Promise<McpServer>), so this resolves in the
+  // background, after buildServer() has already returned. No `.catch()` is
+  // needed at this call site: `statusEndpoint.url` itself never rejects
+  // (every failure path in endpoint.ts resolves null instead of throwing),
+  // and registerServer is internally best-effort -- see discovery.ts's own
+  // doc comment -- so there is no remaining path here that could produce an
+  // unhandled rejection.
+  void statusEndpoint.url.then((su) => {
+    if (su === null) return;
+    installDiscoveryExitHandlersOnce();
+    registerServer({ pid: process.pid, port: Number(new URL(su).port), startedAt, version: STATUS_VERSION });
+  });
   const server = new McpServer(
     { name: 'norma-video', version: '0.2.0' },
     {
