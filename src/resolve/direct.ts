@@ -1,5 +1,5 @@
 import { unlink } from 'node:fs/promises';
-import { partialPathFor, promotePartial, sweepStalePartials } from '../util/partials.js';
+import { partialPathFor, promotePartial, discardPartial, sweepStalePartials } from '../util/partials.js';
 import { join } from 'node:path';
 import type { VideoResolver, ResolveOptions, ResolveResult } from '../types.js';
 import { probe } from '../media/ffmpeg.js';
@@ -37,6 +37,7 @@ export class DirectMediaResolver implements VideoResolver {
     // paths below still unlink explicitly -- this covers the shape where
     // none of our code gets to run at all.
     const partial = partialPathFor(out);
+    let promoted = false;
     sweepStalePartials(opts.workDir);
     try {
       // §4: gated structurally, not by an explicit condition here -- the
@@ -49,11 +50,11 @@ export class DirectMediaResolver implements VideoResolver {
       // like every other subprocess: a stalled origin used to hang this mux
       // (and analyze_video with it) forever.
       if (/\.(m3u8|mpd)(\?|#|$)/i.test(url)) {
-        const r = await run('ffmpeg', ['-y', '-i', url, '-c', 'copy', partial], { timeoutMs: MEDIA_DOWNLOAD_TIMEOUT_MS });
+        const r = await run('ffmpeg', ['-y', '-i', url, '-f', 'mp4', '-c', 'copy', partial], { timeoutMs: MEDIA_DOWNLOAD_TIMEOUT_MS });
         if (r.code !== 0) {
           // A failed mux can leave a partial file behind -- this return path
           // bypasses the catch below, so it must clean up itself.
-          await unlink(partial).catch(() => {});
+          discardPartial(partial);
           return { status: 'extractor_failed', message: `ffmpeg could not fetch stream: ${r.stderr.slice(-300)}` };
         }
       } else {
@@ -61,7 +62,7 @@ export class DirectMediaResolver implements VideoResolver {
         if (!dl.ok) {
           // Every non-ok return bypasses the catch below, so each must
           // clean up the partial itself.
-          await unlink(partial).catch(() => {});
+          discardPartial(partial);
           if (dl.status === 401 || dl.status === 403) {
             return { status: 'auth_required', message: `HTTP ${dl.status} fetching media` };
           }
@@ -69,7 +70,8 @@ export class DirectMediaResolver implements VideoResolver {
           return { status: 'extractor_failed', message: `HTTP ${dl.status}` };
         }
       }
-      promotePartial(out);
+      promotePartial(partial, out);
+      promoted = true;
       const p = await probe(out);
       return {
         status: 'ok', filePath: out, platform: 'direct',
@@ -78,9 +80,12 @@ export class DirectMediaResolver implements VideoResolver {
         languageHint: null, rangeApplied: false,
       };
     } catch (e) {
-      // Both names: the catch can fire before OR after promotion.
-      await unlink(partial).catch(() => {});
-      await unlink(out).catch(() => {});
+      // Only ever our own partial. `out` is deleted ONLY if this call is the
+      // one that promoted it -- a concurrent call may have written that file
+      // and already returned it to its caller as a success, and a
+      // pre-existing source.mp4 from an earlier run is the caller's too.
+      discardPartial(partial);
+      if (promoted) await unlink(out).catch(() => {});
       return { status: 'extractor_failed', message: (e as Error).message };
     }
   }

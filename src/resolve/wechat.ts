@@ -1,5 +1,5 @@
 import { unlink } from 'node:fs/promises';
-import { partialPathFor, promotePartial, sweepStalePartials } from '../util/partials.js';
+import { partialPathFor, promotePartial, discardPartial, sweepStalePartials } from '../util/partials.js';
 import { join } from 'node:path';
 import type { VideoResolver, ResolveOptions, ResolveResult, ResolveFailure } from '../types.js';
 import { probe } from '../media/ffmpeg.js';
@@ -373,6 +373,7 @@ export class WeChatHeadlessResolver implements VideoResolver {
     // Same partial-then-promote discipline as direct.ts: a killed process
     // must never leave bytes under the finished name (src/util/partials.ts).
     const partial = partialPathFor(out);
+    let promoted = false;
     sweepStalePartials(opts.workDir);
     try {
       // §4: gated structurally, same as direct.ts -- download() is only ever
@@ -386,7 +387,7 @@ export class WeChatHeadlessResolver implements VideoResolver {
       const dl = await fetchToFile(mediaUrl, partial, { timeoutMs: MEDIA_DOWNLOAD_TIMEOUT_MS });
       if (!dl.ok) {
         // Both non-ok returns bypass the catch below, so clean up here.
-        await unlink(partial).catch(() => {});
+        discardPartial(partial);
         if (dl.status === 404) {
           return { status: 'not_found', resolvedBy: 'wechat', message: 'Media URL returned HTTP 404.' };
         }
@@ -395,7 +396,8 @@ export class WeChatHeadlessResolver implements VideoResolver {
         // A failure here more likely means the token/sign expired between resolve and download.
         return { status: 'extractor_failed', resolvedBy: 'wechat', message: `HTTP ${dl.status} downloading media` };
       }
-      promotePartial(out);
+      promotePartial(partial, out);
+      promoted = true;
       const p = await probe(out);
       return {
         status: 'ok', filePath: out, platform: 'wechat_channels', title, duration: p.duration,
@@ -413,9 +415,9 @@ export class WeChatHeadlessResolver implements VideoResolver {
         rangeApplied: false,
       };
     } catch (e) {
-      // Both names: the catch can fire before OR after promotion.
-      await unlink(partial).catch(() => {});
-      await unlink(out).catch(() => {});
+      // Only ever our own partial; `out` only if we promoted it (see direct.ts).
+      discardPartial(partial);
+      if (promoted) await unlink(out).catch(() => {});
       return { status: 'extractor_failed', resolvedBy: 'wechat', message: `Failed to download media: ${(e as Error).message}` };
     }
   }

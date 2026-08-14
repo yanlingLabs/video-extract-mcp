@@ -144,15 +144,25 @@ from a video with no speech. A stage skipped *by design* (frame-mode short circu
 is not a degradation and must not fabricate a warning.
 
 **Partial downloads are written under `.part` and promoted on completion.**
-`src/util/partials.ts` owns this. The reason is the shape where none of our
+`src/util/partials.ts` owns this. It exists for the shape where none of our
 cleanup code runs at all — a killed process, a crash, a power cut: the only
 protection left is the name the bytes were written under, so a truncated
-file can never be mistaken for a finished `source.mp4`. Failures sweep their
-own partial immediately; a download entering a directory sweeps `.part`
-files older than six hours (the age gate is what stops it deleting a
-*concurrent* download's live bytes). This does not weaken the never-delete
-rule: `.part` is ours, everything else is the caller's, and a test asserts
-that manifests/transcripts/frames/completed media survive a sweep at any age.
+file can never be mistaken for a finished `source.mp4`.
+
+Three rules that each cost a real bug to learn:
+- **The pattern is anchored to `source.`, not to `.part`.** `.part` is a
+  shared convention (Firefox, a user's own yt-dlp), so a bare suffix match
+  inside the caller's directory deletes THEIR files — and misses yt-dlp's
+  actual fragment litter (`-Frag12`, `.ytdl`).
+- **There is no age-blind sweep.** A directory sweep cannot tell an
+  abandoned partial from a concurrent call's live one; failing calls remove
+  only paths they themselves created (`trackNewPartials`).
+- **`out` is deleted only by the call that promoted it.** Otherwise a slow
+  call's failure deletes a file a fast call already returned as success.
+
+Partial names are unique per call, and ffmpeg is passed an explicit `-f`
+because it infers the muxer from the output extension — a `.part` name has
+none, which silently broke every HLS URL once.
 
 **`src/types.ts` is the single source of truth** for shared types.
 
