@@ -35,13 +35,31 @@ Install the system binaries first — these can't come from npm:
 brew install ffmpeg yt-dlp tesseract tesseract-lang
 ```
 
-Then point your MCP client at the package. For Claude Code:
+Then point your MCP client at the package. There are two ways, and they differ in ways worth thirty seconds of your time.
+
+**Option A — `npx`, nothing installed.** Simplest, and it picks up new releases on its own.
 
 ```bash
-claude mcp add video-extract -- npx -y @yanlinglabs/video-extract-mcp
+claude mcp add --scope user video-extract -- npx -y @yanlinglabs/video-extract-mcp
 ```
 
-Or in any MCP client's config:
+**Option B — installed globally.** Starts faster and gives you the `video-extract` status CLI as a real command.
+
+```bash
+npm install -g @yanlinglabs/video-extract-mcp
+claude mcp add --scope user video-extract -- video-extract-mcp
+```
+
+|  | `npx` (A) | global install (B) |
+|---|---|---|
+| Updates | automatic — resolves the latest version on each cold start | **manual: `npm update -g @yanlinglabs/video-extract-mcp`**. You stay on the installed version until you run it |
+| Startup | ~0.9s (npm resolution on every launch) | ~0.1s |
+| `video-extract status` in your shell | not on `PATH` — needs `npx -y -p @yanlinglabs/video-extract-mcp video-extract status` | works directly |
+| Working directory | must not be this package's own checkout (see below) | irrelevant |
+
+Neither affects what agents can do: an agent checks on background work over HTTP using the `statusUrl` handed to it in the reply, never a shell command. The CLI is for humans.
+
+Or in any MCP client's config — `"command": "npx", "args": ["-y", "@yanlinglabs/video-extract-mcp"]` for A, or `"command": "video-extract-mcp"` with no args for B:
 
 ```json
 {
@@ -53,6 +71,8 @@ Or in any MCP client's config:
   }
 }
 ```
+
+> **One gotcha with `npx`, and it only bites contributors.** Run inside this package's own git checkout, `npx @yanlinglabs/video-extract-mcp` fails with `command not found` — npx sees the local `package.json` claiming that name, looks for the binary in a local `node_modules/.bin` that was never populated, and gives up. Since MCP clients launch servers with the working directory set to your project, option A cannot work *in this repo*. Working on the tool itself? Point that one project at your build — `claude mcp add --scope local video-extract -- node "$PWD/dist/mcp.js"` — which also means a `npm run build` takes effect immediately, with no publish round-trip. Everywhere else, `npx` is fine.
 
 That is enough for any video that has captions — which, thanks to the caption-first transcript policy, is most of them. The vision model downloads itself on first use.
 
