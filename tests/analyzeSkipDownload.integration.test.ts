@@ -3,6 +3,7 @@ import { mkdtempSync, writeFileSync, existsSync, readFileSync, chmodSync, readdi
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { analyzeVideo } from '../src/analyze.js';
+import { analyzeVideoTool } from '../src/agent/analyzeTool.js';
 import { makeTestVideo } from '../src/media/ffmpeg.js';
 
 /**
@@ -137,6 +138,40 @@ describe('an UNcaptioned transcript-only request', () => {
     expect(m.transcript).toBeNull();
     expect(m.processing.warnings.some((w) => w.startsWith('asr failed'))).toBe(true);
   }, 120_000);
+});
+
+describe('the agent layer, against a manifest that has no filePath at all', () => {
+  it('returns a usable reply with videoPath simply absent', async () => {
+    // Every other analyzeTool test mocks analyzeVideo, and every mock
+    // manifest carries a filePath -- so before this change no test in the
+    // suite had ever put a filePath-less manifest through this layer. It
+    // runs cleanupOrphanedCopy(raw, final) and the videoPath spread against
+    // that shape, so drive the REAL pipeline (fake extractor, real
+    // analyzeVideo, real agent layer) rather than asserting from a mock
+    // that would only re-state the shape this test exists to discover.
+    const video = await makeTestVideo(join(mkdtempSync(join(tmpdir(), 'vem-skipsrc8-')), 'v.mp4'), 1);
+    const f = fakeYtDlp({ withCaptions: true, video });
+    usePath(f.binDir);
+
+    // destinationPath IS the working directory for a URL source, so point
+    // the fake at the same place the tool will write.
+    const r = await analyzeVideoTool({ destinationPath: f.workDir, videos: [{ pathOrUrl: URL, frames: 'none' }] });
+
+    const item = r.videos[0]!;
+    expect(item.status).toBe('ok');
+    // The whole point: no media fetched, so no videoPath to report.
+    expect(item.videoPath).toBeUndefined();
+    expect(existsSync(join(f.workDir, 'source.mp4'))).toBe(false);
+    // ...and everything else the agent actually needs is still there.
+    expect(existsSync(item.manifestPath)).toBe(true);
+    expect(existsSync(item.transcriptPath!)).toBe(true);
+    expect(item.transcript?.source).toBe('manual');
+    expect(item.duration).toBe(12);
+    expect(item.warnings).toEqual([]);
+    // The manifest on disk agrees -- filePath omitted, not an empty string.
+    const written = JSON.parse(readFileSync(item.manifestPath, 'utf8')) as { source: Record<string, unknown> };
+    expect('filePath' in written.source).toBe(false);
+  }, 60_000);
 });
 
 describe('a caption track the platform announced but never wrote', () => {
