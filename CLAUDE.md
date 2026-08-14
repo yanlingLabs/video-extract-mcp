@@ -124,7 +124,8 @@ the caller, not this server.
 every accepted socket call `.unref()` so a live endpoint can never hold the process
 open — the exact 0.2.0 zombie-process class this feature must not reintroduce.
 `tests/mcpProcessLifecycle.test.ts` guards this with the endpoint genuinely live;
-dropping either unref call must fail it.
+dropping both unref calls together fails it — the only combination actually
+verified, so do not assume either call alone is redundant.
 
 **Workers are resolved as siblings of the *running* module**, so they only exist in
 compiled output — from `src/` under tsx the sibling is a `.ts` file and the spawn

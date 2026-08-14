@@ -247,7 +247,7 @@ Both tools are task-capable. Called as a plain MCP tool call, every example abov
 
 ## Watching progress
 
-`statusMessage` (above) is a snapshot at each poll — useful, but coalesced, and gone once the task completes. For anything longer-lived — checking from a different terminal, after a client restarted, across every video every server on the machine is working on — every server also runs a small, local, always-on status channel. Its one governing rule: **the server reports observations, never judgments.** No response anywhere in this channel ever says `stale`, `stuck`, or `healthy`, or invents a completion percentage — that call belongs to whoever is asking, made by polling twice and comparing.
+`statusMessage` (above) is a snapshot at each poll — useful, but coalesced, and gone once the task completes. For anything longer-lived — checking from a different terminal, after a client restarted, across every video every server on the machine is working on — every server also runs a small, local status channel, on by default. Its one governing rule: **the server reports observations, never judgments.** No response anywhere in this channel ever says `stale`, `stuck`, or `healthy`, or invents a completion percentage — that call belongs to whoever is asking, made by polling twice and comparing.
 
 **The CLI.** Once installed, `video-extract status [--watch] [--json] [url...]` discovers every *live* `video-extract-mcp` server on the machine — each MCP client spawns its own server process, and this merges across all of them, not just whichever one you happen to be talking to — and renders one view:
 
@@ -259,9 +259,9 @@ https://youtu.be/JkL012rst  queued
 server pid 4098 · up 14m · cap 4 · running 2 · queued 1
 ```
 
-Every field is exactly what it says: raw stage names in the order they fired, raw elapsed time, the child process actually doing the work and its cumulative CPU, and the working directory's byte count. `--watch` re-renders in place every second until you press Ctrl-C; `--json` prints the same, merged across every live server, as plain JSON with no ANSI control bytes, for scripting rather than reading; any positional argument filters the output to just that URL (repeatable). With no live servers it prints `no live video-extract servers` and exits 0.
+Every field is exactly what it says: raw stage names in the order they fired, raw elapsed time, the child process actually doing the work and its cumulative CPU, and the working directory's byte count. `--watch` re-renders in place every second until you press Ctrl-C; `--json` prints the same, merged across every live server, as plain JSON with no ANSI control bytes, for scripting rather than reading; any positional argument filters the output to just that URL (repeatable). With no live servers, the human-readable render prints `no live video-extract servers`; `--json` prints `[]` instead — either way it exits 0.
 
-**The endpoint.** Every server also runs a localhost-only `GET /status` — bound to an ephemeral port by default — that the CLI above is itself just a client of. Its URL is `statusUrl` in a background task's handle reply and in every completed result (`null` when the endpoint is disabled), so an agent already holding a task handle or a result never has to shell out to find it:
+**The endpoint.** Every server also runs a localhost-only `GET /status` — bound to an ephemeral port by default — that the CLI above is itself just a client of. Its URL reaches an agent two ways, so nobody has to shell out to find it: the completed result's `statusUrl` field (`null` when the endpoint is disabled), and, for a task-mode caller that only has a handle so far, the handle reply's own `statusMessage`, prefixed `status: <url>` — with no such prefix at all, not a null, when the endpoint is disabled:
 
 ```bash
 curl http://127.0.0.1:PORT/status
