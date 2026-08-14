@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { mkdtempSync, writeFileSync, existsSync, readdirSync, readFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, existsSync, readdirSync, readFileSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer, type Server } from 'node:http';
@@ -14,20 +14,6 @@ import { makeTestVideo } from '../src/media/ffmpeg.js';
  */
 let server: Server | null = null;
 afterEach(() => { server?.close(); server = null; });
-
-/** Serves a real file, optionally as an HLS playlist referencing itself. */
-function origin(body: Buffer, contentType: string, path: string): Promise<string> {
-  return new Promise((resolve) => {
-    server = createServer((_req, res) => {
-      res.writeHead(200, { 'content-type': contentType, 'content-length': String(body.length) });
-      res.end(body);
-    });
-    server.listen(0, '127.0.0.1', () => {
-      const a = server!.address();
-      resolve(`http://127.0.0.1:${typeof a === 'object' && a ? a.port : 0}${path}`);
-    });
-  });
-}
 
 describe('a .m3u8 URL still resolves', () => {
   it('muxes to a completed source.mp4 (ffmpeg cannot infer a muxer from a .part name)', async () => {
@@ -94,5 +80,53 @@ describe('a failing call never destroys a completed file it did not write', () =
     expect(existsSync(prior)).toBe(true);                  // the old artifact survived
     expect(readFileSync(prior).length).toBe(priorBytes);   // byte-for-byte
     expect(readdirSync(dir).filter((f) => f.endsWith('.part'))).toEqual([]);
+  }, 60_000);
+});
+
+describe('the direct resolver cleans up its own bytes', () => {
+  it('discards its partial when the ffmpeg mux fails', async () => {
+    // The mux failure return bypasses the catch, so it must clean up itself.
+    const dir = mkdtempSync(join(tmpdir(), 'vem-muxfail-'));
+    const body = Buffer.from('#EXTM3U\n#EXT-X-VERSION:3\nnot-a-real-playlist\n');
+    server = createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/vnd.apple.mpegurl', 'content-length': String(body.length) });
+      res.end(body);
+    });
+    const url: string = await new Promise((resolve) => {
+      server!.listen(0, '127.0.0.1', () => {
+        const a = server!.address();
+        resolve(`http://127.0.0.1:${typeof a === 'object' && a ? a.port : 0}/broken.m3u8`);
+      });
+    });
+    const r = await new DirectMediaResolver().resolve(url, { workDir: dir, returnVideo: true });
+    expect(r.status).not.toBe('ok');
+    expect(readdirSync(dir)).toEqual([]);   // no partial, no anything
+  }, 60_000);
+
+  it('sweeps an abandoned partial on entry, before its own download', async () => {
+    // The entry sweep in direct/wechat had no coverage: it could be deleted
+    // outright with the whole suite green.
+    const dir = mkdtempSync(join(tmpdir(), 'vem-directsweep-'));
+    const orphan = join(dir, 'source.mp4.4242-9.part');
+    writeFileSync(orphan, Buffer.alloc(500_000));
+    const old = new Date(Date.now() - 24 * 60 * 60_000);
+    utimesSync(orphan, old, old);
+
+    const real = await makeTestVideo(join(mkdtempSync(join(tmpdir(), 'vem-ds-src-')), 'v.mp4'), 1);
+    const bytes = readFileSync(real);
+    server = createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'video/mp4', 'content-length': String(bytes.length) });
+      res.end(bytes);
+    });
+    const url: string = await new Promise((resolve) => {
+      server!.listen(0, '127.0.0.1', () => {
+        const a = server!.address();
+        resolve(`http://127.0.0.1:${typeof a === 'object' && a ? a.port : 0}/clip.mp4`);
+      });
+    });
+    const r = await new DirectMediaResolver().resolve(url, { workDir: dir, returnVideo: true });
+    expect(r.status).toBe('ok');
+    expect(existsSync(orphan)).toBe(false);
+    expect(readdirSync(dir)).toEqual(['source.mp4']);
   }, 60_000);
 });

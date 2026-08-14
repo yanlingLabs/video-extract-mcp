@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { mkdtempSync, readdirSync, writeFileSync, existsSync, utimesSync, chmodSync } from 'node:fs';
+import { mkdtempSync, readdirSync, writeFileSync, existsSync, utimesSync, chmodSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer, type Server } from 'node:http';
@@ -56,22 +56,43 @@ describe('partial hygiene: the process is killed mid-download', () => {
   }, 30_000);
 });
 
-describe('partial hygiene: a child process is killed (the documented stop-a-job workflow)', () => {
-  it('removes the abandoned partial as soon as the download reports failure', async () => {
-    // Here the SERVER survives -- only yt-dlp died -- so our code does run,
-    // and leaving the partial for six hours would be pure litter.
-    const dir = mkdtempSync(join(tmpdir(), 'vem-childkill-'));
+describe('partial hygiene: a failed yt-dlp download', () => {
+  it('leaves its bytes for the age-gated sweep rather than risking a sibling\'s', async () => {
+    // Deliberately NOT cleaned immediately. yt-dlp picks its own filenames,
+    // so two calls into one directory produce the same names and nothing --
+    // not an exact path, not a before/after snapshot -- can tell our
+    // abandoned bytes from a concurrent call's live ones. An earlier draft
+    // tried and destroyed 2.4MB of a running download.
+    const dir = mkdtempSync(join(tmpdir(), 'vem-ytfail-'));
     const binDir = mkdtempSync(join(tmpdir(), 'vem-bin-'));
     const fake = join(binDir, 'yt-dlp');
-    writeFileSync(fake, `#!/bin/sh\nprintf 'x' > "${dir}/source.mp4.part"\nexit 137\n`);  // 137 = SIGKILLed
+    writeFileSync(fake, `#!/bin/sh\nprintf 'x' > "${dir}/source.mp4.part"\nexit 137\n`);
     chmodSync(fake, 0o755);
-
     const prev = process.env.PATH;
     process.env.PATH = `${binDir}:${prev ?? ''}`;
     try {
       const r = await new YtDlpResolver().resolve('https://example.invalid/v', { workDir: dir, returnVideo: true });
       expect(r.status).not.toBe('ok');
-      expect(existsSync(join(dir, 'source.mp4.part'))).toBe(false);
+      // Recognisably incomplete, and nothing under a finished name.
+      expect(readdirSync(dir)).toEqual(['source.mp4.part']);
+    } finally { process.env.PATH = prev; }
+  }, 30_000);
+
+  it('never leaves a concurrent call\'s live partial worse off', async () => {
+    // The harm an earlier draft caused, pinned so it cannot come back.
+    const dir = mkdtempSync(join(tmpdir(), 'vem-sibling-'));
+    const siblingLive = join(dir, 'source.mp4.99999-7.part');
+    writeFileSync(siblingLive, Buffer.alloc(2_368_000));   // another call, mid-download
+    const binDir = mkdtempSync(join(tmpdir(), 'vem-bin3-'));
+    const fake = join(binDir, 'yt-dlp');
+    writeFileSync(fake, '#!/bin/sh\nexit 137\n');
+    chmodSync(fake, 0o755);
+    const prev = process.env.PATH;
+    process.env.PATH = `${binDir}:${prev ?? ''}`;
+    try {
+      await new YtDlpResolver().resolve('https://example.invalid/v', { workDir: dir, returnVideo: true });
+      expect(existsSync(siblingLive)).toBe(true);
+      expect(statSync(siblingLive).size).toBe(2_368_000);   // byte-for-byte
     } finally { process.env.PATH = prev; }
   }, 30_000);
 });

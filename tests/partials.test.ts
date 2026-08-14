@@ -3,8 +3,7 @@ import { mkdtempSync, writeFileSync, existsSync, utimesSync, readdirSync, mkdirS
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  STALE_PARTIAL_AGE_MS, partialPathFor, promotePartial, discardPartial,
-  sweepStalePartials, trackNewPartials,
+  STALE_PARTIAL_AGE_MS, partialPathFor, promotePartial, discardPartial, sweepStalePartials,
 } from '../src/util/partials.js';
 
 /** Writes a file and back-dates its mtime by `ageMs`. */
@@ -80,14 +79,33 @@ describe('sweepStalePartials', () => {
     expect(existsSync(dead)).toBe(false);
   });
 
-  it('has no age-blind mode: a zero age gate still spares fresh partials', () => {
-    // An age-blind directory sweep cannot tell an abandoned partial from a
-    // sibling call's live one, so the API refuses to offer that.
+  it('exposes no way to lower the age gate', () => {
+    // Enforced by the signature, not by an assertion: an earlier draft took
+    // a maxAgeMs override, a caller passed 0 meaning "clean up after
+    // myself", and it deleted a concurrent download's live bytes. A test
+    // asserting the old override was safe was itself flaky, because it
+    // wasn't. sweepStalePartials now takes exactly one argument.
+    expect(sweepStalePartials.length).toBe(1);
     const dir = mkdtempSync(join(tmpdir(), 'vem-noblind-'));
     const fresh = join(dir, 'source.mp4.1-1.part');
     writeFileSync(fresh, 'live bytes');
-    expect(sweepStalePartials(dir, 0)).toBe(0);
+    expect(sweepStalePartials(dir)).toBe(0);
     expect(existsSync(fresh)).toBe(true);
+  });
+
+  it('collects the litter a killed MERGE leaves -- media extensions and all', () => {
+    // yt-dlp downloads video and audio separately then muxes. Killed
+    // mid-merge it leaves per-format files and a truncated source.temp.mp4
+    // -- bytes under an ordinary media extension, which is precisely the
+    // shape this module exists to keep out of a caller's directory.
+    const dir = mkdtempSync(join(tmpdir(), 'vem-merge-'));
+    aged(dir, 'source.f137.mp4', ANCIENT);
+    aged(dir, 'source.f140.m4a', ANCIENT);
+    aged(dir, 'source.temp.mp4', ANCIENT);
+    const keep = aged(dir, 'source.mp4', ANCIENT);   // the finished article
+    expect(sweepStalePartials(dir)).toBe(3);
+    expect(existsSync(keep)).toBe(true);
+    expect(readdirSync(dir)).toEqual(['source.mp4']);
   });
 
   it('is not recursive, so per-item video-N/ subdirectories are untouched', () => {
@@ -100,31 +118,6 @@ describe('sweepStalePartials', () => {
 
   it('returns 0 rather than throwing for a directory that does not exist', () => {
     expect(sweepStalePartials(join(tmpdir(), 'vem-absent-dir-xyz'))).toBe(0);
-  });
-});
-
-describe('trackNewPartials', () => {
-  it('removes only what appeared after the snapshot', () => {
-    // A failing call abandons its own bytes immediately, without an
-    // age-blind sweep that would take a concurrent download's live ones.
-    const dir = mkdtempSync(join(tmpdir(), 'vem-track-'));
-    const sibling = join(dir, 'source.mp4.222-1.part');
-    writeFileSync(sibling, 'another call, mid-download');
-    const drop = trackNewPartials(dir);
-    const mine = join(dir, 'source.webm.333-1.part');
-    writeFileSync(mine, 'my bytes');
-    expect(drop()).toBe(1);
-    expect(existsSync(mine)).toBe(false);
-    expect(existsSync(sibling)).toBe(true);   // never the sibling's
-  });
-
-  it('ignores caller files that appear during the call', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'vem-track2-'));
-    const drop = trackNewPartials(dir);
-    writeFileSync(join(dir, 'manifest.json'), '{}');
-    writeFileSync(join(dir, 'their-download.mp4.part'), 'not ours');
-    expect(drop()).toBe(0);
-    expect(readdirSync(dir).sort()).toEqual(['manifest.json', 'their-download.mp4.part']);
   });
 });
 

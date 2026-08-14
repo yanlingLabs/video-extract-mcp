@@ -149,20 +149,24 @@ cleanup code runs at all — a killed process, a crash, a power cut: the only
 protection left is the name the bytes were written under, so a truncated
 file can never be mistaken for a finished `source.mp4`.
 
-Three rules that each cost a real bug to learn:
+Three rules, each of which cost a real bug:
 - **The pattern is anchored to `source.`, not to `.part`.** `.part` is a
   shared convention (Firefox, a user's own yt-dlp), so a bare suffix match
-  inside the caller's directory deletes THEIR files — and misses yt-dlp's
-  actual fragment litter (`-Frag12`, `.ytdl`).
-- **There is no age-blind sweep.** A directory sweep cannot tell an
-  abandoned partial from a concurrent call's live one; failing calls remove
-  only paths they themselves created (`trackNewPartials`).
+  inside the caller's directory deletes THEIR files — while missing the
+  litter yt-dlp actually leaves (`-FragN`, `.ytdl`, per-format `source.fNNN.*`,
+  and a truncated `source.temp.mp4`, which wears a media extension).
+- **Cleanup is age-gated, always, with no override.** Neither a directory
+  sweep nor a before/after snapshot can distinguish an abandoned partial
+  from a concurrent call's live one — yt-dlp reuses the same names across
+  calls. A draft that tried to be cleverer destroyed 2.4 MB of a running
+  download. Only a path a call minted itself (`partialPathFor`) may be
+  deleted eagerly; everything else waits out the age gate.
 - **`out` is deleted only by the call that promoted it.** Otherwise a slow
   call's failure deletes a file a fast call already returned as success.
 
-Partial names are unique per call, and ffmpeg is passed an explicit `-f`
-because it infers the muxer from the output extension — a `.part` name has
-none, which silently broke every HLS URL once.
+ffmpeg is passed an explicit `-f` because it infers the muxer from the
+output extension — a `.part` name has none, which silently broke every HLS
+URL in one draft.
 
 **`src/types.ts` is the single source of truth** for shared types.
 

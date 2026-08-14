@@ -2,7 +2,7 @@ import { readdirSync, existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { VideoResolver, ResolveOptions, ResolveResult, ResolveFailure, CaptionTrack, VideoMetadata } from '../types.js';
 import { run } from '../util/run.js';
-import { sweepStalePartials, trackNewPartials } from '../util/partials.js';
+import { sweepStalePartials } from '../util/partials.js';
 import { probe } from '../media/ffmpeg.js';
 import { baseLang } from '../transcript/routing.js';
 import { statusCallbacks } from '../status/context.js';
@@ -259,19 +259,15 @@ export class YtDlpResolver implements VideoResolver {
     // on success, so anything older than the age gate is orphaned bytes
     // nothing will ever finish (src/util/partials.ts).
     if (wantsDownload) sweepStalePartials(opts.workDir);
-    // yt-dlp chooses its own partial filenames (the extension depends on the
-    // format it picks), so the exact paths are not knowable in advance --
-    // but the ones that appear during THIS call are. Removing only those is
-    // what lets a failure abandon its own bytes immediately without an
-    // age-blind directory sweep, which would take a concurrent call's live
-    // download with it.
-    const dropOurPartials = trackNewPartials(opts.workDir);
     const r = await run('yt-dlp', [...args, url], { timeoutMs: 15 * 60_000 });
     if (r.code !== 0) {
-      // yt-dlp cleans up after its own graceful failures inconsistently and
-      // not at all when killed; either way this return abandons the download
-      // for good, so its bytes are ours to remove.
-      dropOurPartials();
+      // Deliberately no targeted cleanup here. yt-dlp picks its own
+      // filenames, so two calls into one directory produce the SAME names --
+      // neither an exact path nor a before/after snapshot can tell our
+      // abandoned bytes from a concurrent call's live ones, and an earlier
+      // draft that tried destroyed 2.4MB of a running download. Whatever
+      // this failure left is collected by the age-gated sweep above on a
+      // later call into this directory (src/util/partials.ts).
       return classifyYtDlpError(r.stderr);
     }
 
@@ -309,7 +305,6 @@ export class YtDlpResolver implements VideoResolver {
 
     const produced = readdirSync(opts.workDir).find((f) => /^source\.(mp4|mkv|webm|m4v)$/.test(f));
     if (!produced) {
-      dropOurPartials();   // no usable media: drop what this call wrote
       return { status: 'extractor_failed', message: 'yt-dlp produced no media file', resolvedBy: 'ytdlp' };
     }
     const filePath = join(opts.workDir, produced);
