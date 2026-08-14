@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { mkdtempSync, existsSync, readFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -596,63 +596,97 @@ describe('status channel wiring (Task 4)', () => {
     const srcDir = mkdtempSync(join(tmpdir(), 'norma-mcp-status-src-'));
     const video = await makeTestVideo(join(srcDir, 'v.mp4'), 3);
     const destDir = mkdtempSync(join(tmpdir(), 'norma-mcp-status-'));
-    const server = buildServer({ statusPort: 0 });
-    const client = await connectClient(server);
-    // callToolStream needs the client's own task-tool cache populated first
-    // -- client.experimental.tasks.isToolTask() reads _cachedKnownTaskTools,
-    // populated only by listTools() (tests/taskLifecycle.test.ts's own
-    // documented gate). This file's shared connectClient deliberately omits
-    // this call (its ~20 other tests only ever make plain client.callTool()
-    // calls, which need no such cache per task-1-report.md's fact (a)), so
-    // it is called here inline instead of widening that shared helper.
-    await client.listTools();
+    // Final whole-branch review, Minor finding 9: isolated from the suite's
+    // shared baseline cache dir (vitest.config.ts) so the cache-dir
+    // assertion below is hermetic -- that dir is shared across every
+    // buildServer()-calling test in the suite (statusCli.test.ts's own
+    // comment on its freshCacheDir() documents this), so asserting its
+    // EXACT contents against the shared one would be watching a moving
+    // target. Unstubbed in `finally` so a thrown assertion still restores
+    // the baseline for whatever test runs next in this file.
+    const cacheDir = mkdtempSync(join(tmpdir(), 'norma-mcp-status-cache-'));
+    vi.stubEnv('VIDEO_EXTRACT_CACHE_DIR', cacheDir);
+    try {
+      const server = buildServer({ statusPort: 0 });
+      const client = await connectClient(server);
+      // callToolStream needs the client's own task-tool cache populated first
+      // -- client.experimental.tasks.isToolTask() reads _cachedKnownTaskTools,
+      // populated only by listTools() (tests/taskLifecycle.test.ts's own
+      // documented gate). This file's shared connectClient deliberately omits
+      // this call (its ~20 other tests only ever make plain client.callTool()
+      // calls, which need no such cache per task-1-report.md's fact (a)), so
+      // it is called here inline instead of widening that shared helper.
+      await client.listTools();
 
-    const stream = client.experimental.tasks.callToolStream({
-      name: 'analyze_video',
-      arguments: { destinationPath: destDir, videos: [{ pathOrUrl: video, frames: 'even', maxFrames: 1, transcript: false }] },
-    }) as AsyncGenerator<StreamMsg>;
-    const first = await stream.next();
-    const firstMsg = first.value as StreamMsg;
-    expect(firstMsg.type).toBe('taskCreated');
-    // src/mcp.ts's createTask handler stamps this BEFORE the background
-    // executor even starts (see its own comment for why), so this is
-    // deterministic, not a race against the executor's first real
-    // statusMessage update.
-    expect(firstMsg.task?.statusMessage).toMatch(/^status: http:\/\/127\.0\.0\.1:\d+\/status$/);
+      const stream = client.experimental.tasks.callToolStream({
+        name: 'analyze_video',
+        arguments: { destinationPath: destDir, videos: [{ pathOrUrl: video, frames: 'even', maxFrames: 1, transcript: false }] },
+      }) as AsyncGenerator<StreamMsg>;
+      const first = await stream.next();
+      const firstMsg = first.value as StreamMsg;
+      expect(firstMsg.type).toBe('taskCreated');
+      // src/mcp.ts's createTask handler stamps this BEFORE the background
+      // executor even starts (see its own comment for why), so this is
+      // deterministic, not a race against the executor's first real
+      // statusMessage update.
+      expect(firstMsg.task?.statusMessage).toMatch(/^status: http:\/\/127\.0\.0\.1:\d+\/status$/);
 
-    let finalContent: Array<{ type: string; text: string }> | undefined;
-    for await (const msg of stream) {
-      if (msg.type === 'result') finalContent = msg.result!.content;
+      let finalContent: Array<{ type: string; text: string }> | undefined;
+      for await (const msg of stream) {
+        if (msg.type === 'result') finalContent = msg.result!.content;
+      }
+      expect(finalContent).toBeDefined();
+      const parsed = JSON.parse(finalContent![0]!.text) as {
+        videos: Array<{ status: string }>; statusUrl: string | null;
+      };
+      // Top-level, not per-item: toResult(r, statusUrl) spreads it alongside `videos`.
+      expect(parsed.statusUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/status$/);
+      expect(parsed.videos[0]!.status).toBe('ok');
+
+      const body = await (await fetch(parsed.statusUrl!)).json() as {
+        items: Array<{ url: string; tool: string; outcome?: { status: string } }>;
+      };
+      const item = body.items.find((i) => i.url === video);
+      expect(item).toBeDefined();
+      expect(item!.tool).toBe('analyze');
+      expect(item!.outcome?.status).toBe('ok');
+
+      // §10 "registry writes a file per transition" mutant guard: with a
+      // local source, frames:'even', maxFrames:1, transcript:false, the ONLY
+      // artifacts this call can legitimately produce under destinationPath
+      // are the manifest and its relocated frame image(s) -- flat, basename
+      // preserved (src/agent/analyzeTool.ts's relocateFrame; the local source
+      // itself is never copied in, and transcript:false means no
+      // transcript.json). A registry that wrote a status file per stage
+      // transition anywhere under destinationPath fails this.
+      const entries = readdirSync(destDir);
+      expect(entries.length).toBeGreaterThan(0);
+      for (const name of entries) expect(name).toMatch(/^manifest\.json$|^even_\d{4}\.jpg$/);
+
+      // Final whole-branch review, Minor finding 9: the SAME mutant class --
+      // a registry that writes a file per stage transition -- could just as
+      // easily target the CACHE dir instead of destinationPath, and the
+      // guard above would never see it; that gap survived 70 tests. The
+      // discovery contract (src/status/discovery.ts) is "written once at
+      // server start, removed once at exit" -- that write is guaranteed to
+      // have already happened by this point (buildServer()'s fire-and-forget
+      // registerServer() call is chained onto statusEndpoint.url BEFORE
+      // createTask's own `await statusEndpoint.url`, so it runs strictly
+      // before this test could have learned the taskId, let alone reached a
+      // completed result). The allow-list matches exactly the per-pid
+      // discovery layout (final review, Important finding 3) and nothing
+      // else -- no leftover `.tmp` sibling, since the write-then-rename is
+      // guaranteed complete by now.
+      const cacheEntries = readdirSync(cacheDir);
+      expect(cacheEntries).toEqual(['servers']);
+      const serverFiles = readdirSync(join(cacheDir, 'servers'));
+      expect(serverFiles.length).toBeGreaterThan(0);
+      for (const name of serverFiles) expect(name).toMatch(/^\d+\.json$/);
+
+      await client.close();
+    } finally {
+      vi.unstubAllEnvs();
     }
-    expect(finalContent).toBeDefined();
-    const parsed = JSON.parse(finalContent![0]!.text) as {
-      videos: Array<{ status: string }>; statusUrl: string | null;
-    };
-    // Top-level, not per-item: toResult(r, statusUrl) spreads it alongside `videos`.
-    expect(parsed.statusUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/status$/);
-    expect(parsed.videos[0]!.status).toBe('ok');
-
-    const body = await (await fetch(parsed.statusUrl!)).json() as {
-      items: Array<{ url: string; tool: string; outcome?: { status: string } }>;
-    };
-    const item = body.items.find((i) => i.url === video);
-    expect(item).toBeDefined();
-    expect(item!.tool).toBe('analyze');
-    expect(item!.outcome?.status).toBe('ok');
-
-    // §10 "registry writes a file per transition" mutant guard: with a
-    // local source, frames:'even', maxFrames:1, transcript:false, the ONLY
-    // artifacts this call can legitimately produce under destinationPath
-    // are the manifest and its relocated frame image(s) -- flat, basename
-    // preserved (src/agent/analyzeTool.ts's relocateFrame; the local source
-    // itself is never copied in, and transcript:false means no
-    // transcript.json). A registry that wrote a status file per stage
-    // transition anywhere under destinationPath fails this.
-    const entries = readdirSync(destDir);
-    expect(entries.length).toBeGreaterThan(0);
-    for (const name of entries) expect(name).toMatch(/^manifest\.json$|^even_\d{4}\.jpg$/);
-
-    await client.close();
   }, 30_000);
 
   it('statusPort null disables the endpoint: no status prefix, statusUrl null, and nothing is listening', async () => {
