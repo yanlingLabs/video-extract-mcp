@@ -107,6 +107,9 @@ const ANALYZE_DESCRIPTION =
   + "platform's own captions whenever the video has any -- human-written ones first, "
   + "otherwise the platform's automatic ones -- and speech is transcribed locally only "
   + 'for videos with no captions at all; transcript.source tells you which you got. '
+  + 'A transcript-only request (frames: "none", no start/end) on a video that has '
+  + 'captions never downloads the video at all -- it reads the captions and stops, '
+  + 'which is the difference between seconds and minutes on a long video. '
   + BATCHING + ' Use start/end per item to analyze only part of a video -- for supported '
   + 'sources only that section is downloaded, and the transcript covers just that '
   + 'section (the single-instant recipe below is the one exception: nothing is trimmed '
@@ -126,7 +129,8 @@ const ANALYZE_DESCRIPTION =
   + 'whose work has already started cannot -- it will refuse, finish, and deliver its '
   + 'result. ' + STATUS_NOTE + ' ' + LIFETIME + " Each item's result also carries videoPath, the local file it "
   + 'worked from, which you can pass straight back in to inspect another moment without '
-  + 're-downloading. ' + PLATFORMS;
+  + 're-downloading -- present whenever a media file was actually fetched, and absent '
+  + 'when the item needed none (the caption-only case above). ' + PLATFORMS;
 
 const resolveItemSchema = z.object({
   url: z.string().describe('Page or direct video URL.'),

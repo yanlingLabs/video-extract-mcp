@@ -196,6 +196,28 @@ scene detection, quality filtering, OCR, embeddings, transcription, *or* the vid
 re-encode. `normalizeVideo()` runs only for `frames: 'key'`; the WAV is extracted
 only when a transcript is actually needed.
 
+**A captioned transcript-only request never downloads the media.** `frames: 'none'`
++ captions means nothing downstream ever opens the file, so stage 1 of `analyze.ts`
+resolves metadata-only first (`--skip-download` still writes caption files and still
+reports duration) and fetches the media in a second pass *only* if ASR turns out to
+be needed. Measured: 285 MB → 888 KB on a 27-minute video. Three things hold it
+together, each load-bearing:
+- **`usableCaption()` is one function with two callers** — the stage-1 "do we need
+  media?" decision and the transcript stage itself. If they ever disagree, stage 1
+  skips the download and the transcript stage asks for audio that was never
+  fetched. Do not inline either copy.
+- **Deliberately not extended to ranged requests.** A range makes the time base
+  load-bearing (`clipRelative`), and skipping the fetch would answer "just this
+  section" with a whole-video transcript. Pinned in both directions; see
+  `docs/follow-ups.md`.
+- **`duration` comes from the extractor, not a probe, on that path** — genuine
+  (yt-dlp scrapes it during extraction), but only because the gate guarantees a real
+  extractor ran. `direct`/`wechat` return `duration: 0` as a type placeholder, which
+  is why the gate requires a caption track rather than merely `frames: 'none'`.
+
+An analyze item whose stage chain shows no `'downloading'` is therefore honest, not
+a dropped stage.
+
 ## Testing expectations
 
 The recurring defect in this codebase's history is **a test that passes identically

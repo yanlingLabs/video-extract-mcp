@@ -2,7 +2,7 @@
 
 **Turn any video URL into a transcript and the handful of frames that actually matter — locally, from an MCP server your AI agent can call.**
 
-Give it a YouTube link, a TikTok, a WeChat Channels share URL, a raw `.mp4`, or a page from a site nobody has heard of. It downloads the video, produces a transcript (real captions when the platform has them, local speech recognition when it does not), and returns a small set of *important* keyframes — deduplicated, scene-aware, and scored — instead of a thousand near-identical stills.
+Give it a YouTube link, a TikTok, a WeChat Channels share URL, a raw `.mp4`, or a page from a site nobody has heard of. It fetches only what the request actually needs, produces a transcript (real captions when the platform has them, local speech recognition when it does not), and returns a small set of *important* keyframes — deduplicated, scene-aware, and scored — instead of a thousand near-identical stills.
 
 Built for AI agents. Two MCP tools, no cloud, no API keys, no Python.
 
@@ -310,6 +310,8 @@ WeChat Channels (视频号) support is worth calling out: it resolves **headless
 **Degradation is visible.** If OCR dies, or embeddings fail, or speech recognition errors out, the run continues and records a warning. An empty transcript is always distinguishable from a video that simply has no speech.
 
 **Cheap requests are cheap.** A single-frame request skips scene detection, quality filtering, OCR, embeddings, transcription, *and* the video re-encode. Measured at ~240ms whether the source is 6 seconds or 5 minutes long.
+
+**A transcript-only request doesn't download the video.** Ask for `frames: "none"` on a video that has captions and the media is never fetched at all — the captions answer the question, and nothing else in the pipeline needs the file. Measured on a 27-minute YouTube video: 888 KB instead of 285 MB. The reply simply omits `videoPath` in that case, because there is no local file to point at. Add a `start`/`end` range and it downloads as before — a range makes the clip's time base load-bearing, so that case is deliberately left alone.
 
 ## Status
 

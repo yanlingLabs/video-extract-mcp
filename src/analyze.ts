@@ -1,7 +1,9 @@
 import { mkdtempSync, mkdirSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { AnalyzeOptions, Manifest, Transcript, Candidate, SelectedFrame, FrameMode } from './types.js';
+import type {
+  AnalyzeOptions, Manifest, Transcript, Candidate, SelectedFrame, FrameMode, CaptionTrack, ResolveOptions,
+} from './types.js';
 import { resolveFrameMode } from './types.js';
 import { resolve } from './resolve/index.js';
 import { probe, normalizeVideo, extractAudio, trim } from './media/ffmpeg.js';
@@ -27,6 +29,41 @@ import { PeakRssTracker } from './util/rss.js';
 // before the vision model is ever loaded. Importing either library here
 // directly would pull its native addon / ONNX runtime into the long-lived
 // orchestrator process, permanently resident for the tool's whole lifetime.
+
+/**
+ * The caption track this run would actually transcribe from, or null if it
+ * would have to fall back to local ASR.
+ *
+ * Deliberately ONE function serving two callers -- the stage-1 decision about
+ * whether media is needed at all, and the transcript stage that builds the
+ * transcript. If those two ever disagree, stage 1 skips the download and the
+ * transcript stage then asks for audio that was never fetched.
+ *
+ * The existence check here is the one that decides, and it is deliberately
+ * kept even though no current resolver can violate it: pickManualCaption
+ * (src/resolve/ytdlp.ts) only reports a track it found on disk, and
+ * downloadAutoTrack writes the file before returning one. Measured with
+ * mutants rather than assumed:
+ *  - deleting pickManualCaption's check alone changes NOTHING observable --
+ *    this function backstops it (an equivalent mutant, and left as one);
+ *  - deleting this one alone changes no end-to-end pipeline behaviour for
+ *    the same reason in reverse, so it is pinned directly by
+ *    tests/usableCaption.test.ts instead;
+ *  - deleting BOTH turns a missing caption file from "fall back to ASR"
+ *    into a readFileSync throw -- a hard extractor_failed for a video that
+ *    merely lacks captions.
+ * That last combination is the one that matters, and it is the reason the
+ * pair stays. Exported so the contract can be tested directly, since the
+ * pipeline cannot currently produce the input that exercises it.
+ */
+export function usableCaption(
+  captions: { manual: CaptionTrack | null; auto: CaptionTrack | null },
+): { tier: 'manual' | 'auto'; track: CaptionTrack } | null {
+  const tier = chooseCaptionTier(captions);
+  if (tier === 'asr') return null;
+  const track = tier === 'manual' ? captions.manual! : captions.auto!;
+  return existsSync(track.path) ? { tier, track } : null;
+}
 
 export async function analyzeVideo(url: string, opts: AnalyzeOptions = {}): Promise<Manifest> {
   // Computed once, up front: resolveFrameMode is a pure function of
@@ -81,9 +118,45 @@ async function analyzeResolved(
   mkdirSync(framesDir, { recursive: true });
 
   // 1. Resolve (preferredLanguage steers which caption track a resolver picks)
-  const res = await resolve(url, {
+  //
+  // Two-phase, because for one common shape the media file is never read at
+  // all: a transcript-only request (frames 'none') against a video that has
+  // platform captions. Nothing downstream opens it -- no normalize, no scene
+  // detection, no WAV extraction -- so downloading it is pure waste. Measured
+  // on a 27-minute YouTube video with manual captions: 285 MB and minutes of
+  // transfer, for a 58 KB transcript.
+  //
+  // The chicken-and-egg (captions are only known AFTER resolving) is settled
+  // by resolving metadata-only FIRST: yt-dlp's --skip-download still writes
+  // the caption files and still reports duration -- verified directly against
+  // the installed yt-dlp, and again end-to-end (888 KB, 3.4s, no media file).
+  // If that cheap pass shows ASR will be needed after all, phase 2 fetches the
+  // media exactly as before; the wasted phase-1 cost is one metadata call on
+  // yt-dlp and literally nothing on the other two resolvers, whose
+  // metadata-only branches touch the network not at all.
+  //
+  // Deliberately NOT extended to ranged requests. A range makes the media's
+  // time base load-bearing: `clipRelative` below gates the caption clamp on
+  // whether the media was really re-based, and skipping the download would
+  // leave a whole-video transcript answering a "just this section" request,
+  // plus a manifest duration that silently changed meaning from clip to
+  // source. That is the invariant CLAUDE.md marks load-bearing, with tests
+  // pinned in both directions; the measured win here is the whole-video case
+  // anyway. Recorded in docs/follow-ups.md rather than half-done.
+  const wantsRange = opts.start !== undefined && opts.end !== undefined;
+  const mightSkipMedia = frameMode === 'none' && opts.transcript !== false && !wantsRange;
+  const resolveOpts: ResolveOptions = {
     start: opts.start, end: opts.end, workDir, preferredLanguage: opts.preferredLanguage,
-  });
+  };
+  let res = await resolve(url, mightSkipMedia ? { ...resolveOpts, returnVideo: false } : resolveOpts);
+  // Phase 2: the cheap pass produced no media and the transcript will need
+  // ASR, so fetch it for real. The `filePath === ''` term is what keeps a
+  // LOCAL file path out of this branch -- resolve() short-circuits those
+  // before dispatch and hands back the real path (with no captions), so
+  // re-resolving would re-probe a file already in hand.
+  if (res.status === 'ok' && mightSkipMedia && res.filePath === '' && !usableCaption(res.captions)) {
+    res = await resolve(url, resolveOpts);
+  }
   if (res.status !== 'ok') {
     return buildManifest({
       url, platform: 'unknown', title: '', duration: 0, resolvedBy: res.resolvedBy ?? 'none',
@@ -101,6 +174,12 @@ async function analyzeResolved(
   // in the right time base.
   let media = res.filePath;
   let clipRelative = res.rangeApplied;
+  // No media file on disk -- the phase-1 resolve above was enough. Stated as
+  // a fact about what is on disk rather than as a copy of the decision that
+  // led here, so a phase-2 download that somehow produced nothing is treated
+  // as "no media" too (the ASR guard below then fails loudly) instead of
+  // being assumed present.
+  const mediaSkipped = media === '';
   if (opts.start !== undefined && opts.end !== undefined && !res.rangeApplied) {
     if (frameMode === 'even' && opts.start === opts.end) {
       // Single-instant even-sampling request (spec §8's canonical example:
@@ -135,7 +214,16 @@ async function analyzeResolved(
   // answer a one-frame request) that the model-stage short-circuiting alone
   // (tests/analyzeShortcircuit.integration.test.ts) never removed.
   const video = frameMode === 'key' ? (await normalizeVideo(media, workDir)).video : media;
-  const meta = await probe(video);
+  // With no media there is nothing to probe -- and probing '' would throw
+  // into the catch-all, turning every skipped download into an
+  // extractor_failed. The extractor's own duration is a genuine measurement,
+  // not a placeholder: yt-dlp scrapes it during extraction, wholly
+  // independent of the download step (see src/resolve/ytdlp.ts's note on the
+  // same field). Reachable only when a caption track was found, which is
+  // exactly the case where a real extractor supplied that metadata --
+  // direct/wechat return duration 0 as a type placeholder, and both also
+  // return no captions, so neither can arrive here.
+  const meta = mediaSkipped ? { duration: res.duration } : await probe(video);
   src.duration = meta.duration;
 
   // ASR routing depends only on preferredLanguage/languageHint, so the same
@@ -160,42 +248,56 @@ async function analyzeResolved(
       // then automatic, with local ASR as the fallback only when the video
       // carries no captions at all. chooseCaptionTier documents the measured
       // comparison that reversed the original accuracy bias.
-      const tier = chooseCaptionTier(res.captions);
-      if (tier !== 'asr') {
-        const track = tier === 'manual' ? res.captions.manual! : res.captions.auto!;
-        if (existsSync(track.path)) {
-          let segments = parseVtt(readFileSync(track.path, 'utf8'));
-          // Caption files carry ABSOLUTE full-video timestamps. `clipRelative`
-          // (declared at :99, set true at :120) is true exactly when `video`
-          // -- and therefore every frame timestamp -- has been re-based onto a
-          // 0-based clip, whether the resolver applied the range itself or
-          // stage 2's trim() did, so only then must captions be re-based too,
-          // or every transcriptWindow would be shifted by `start` seconds.
-          // Gating on `clipRelative` in addition to opts.start/opts.end (the
-          // same flag stage 5-7 already uses at :212-213) is what keeps this
-          // correct on the 'even'+start===end carve-out above: there
-          // clipRelative stays false, trim() never ran, and both `video` and
-          // every frame timestamp stay in ABSOLUTE time, so clamping here
-          // would be exactly the bug this gate exists to avoid --
-          // clampSegmentsToRange(segs, start, start) would collapse a caption
-          // straddling `start` to a zero-width {0,0} segment that no longer
-          // lines up with the frame's real (absolute) timestamp, silently
-          // corrupting transcript.segments rather than just transcriptWindow.
-          if (opts.start !== undefined && opts.end !== undefined && clipRelative) {
-            segments = clampSegmentsToRange(segments, opts.start, opts.end);
-          }
-          transcript = {
-            // The TRACK's own language, not the video's: a deliberately-picked
-            // English caption file for a French video is in English.
-            language: track.language ?? res.languageHint ?? 'unknown',
-            source: tier,
-            segments,
-          };
+      // usableCaption() -- the SAME call stage 1 made to decide whether the
+      // media was needed. Sharing it is what guarantees the two agree.
+      const cap = usableCaption(res.captions);
+      if (cap) {
+        let segments = parseVtt(readFileSync(cap.track.path, 'utf8'));
+        // Caption files carry ABSOLUTE full-video timestamps. `clipRelative`
+        // (declared at :99, set true at :120) is true exactly when `video`
+        // -- and therefore every frame timestamp -- has been re-based onto a
+        // 0-based clip, whether the resolver applied the range itself or
+        // stage 2's trim() did, so only then must captions be re-based too,
+        // or every transcriptWindow would be shifted by `start` seconds.
+        // Gating on `clipRelative` in addition to opts.start/opts.end (the
+        // same flag stage 5-7 already uses at :212-213) is what keeps this
+        // correct on the 'even'+start===end carve-out above: there
+        // clipRelative stays false, trim() never ran, and both `video` and
+        // every frame timestamp stay in ABSOLUTE time, so clamping here
+        // would be exactly the bug this gate exists to avoid --
+        // clampSegmentsToRange(segs, start, start) would collapse a caption
+        // straddling `start` to a zero-width {0,0} segment that no longer
+        // lines up with the frame's real (absolute) timestamp, silently
+        // corrupting transcript.segments rather than just transcriptWindow.
+        if (opts.start !== undefined && opts.end !== undefined && clipRelative) {
+          segments = clampSegmentsToRange(segments, opts.start, opts.end);
         }
+        transcript = {
+          // The TRACK's own language, not the video's: a deliberately-picked
+          // English caption file for a French video is in English.
+          language: cap.track.language ?? res.languageHint ?? 'unknown',
+          source: cap.tier,
+          segments,
+        };
       }
       // No usable caption track: this is the only path that needs audio, so
       // it is also the only path that pays for extracting it.
-      if (!transcript) ({ audio } = await extractAudio(media, workDir));
+      if (!transcript) {
+        // Unreachable by construction -- stage 1 skips the download only when
+        // usableCaption() returned a track, and this line is reached only when
+        // that same call returned null. Asserted rather than assumed because
+        // the failure it guards is silent: extractAudio('') would hand ffmpeg
+        // an empty path, and the resulting failure would read as "this video's
+        // audio could not be decoded" rather than "the pipeline never fetched
+        // it". If these two decisions ever drift apart, say so.
+        if (mediaSkipped) {
+          throw new Error(
+            'internal: transcription needs audio, but stage 1 skipped the media download '
+            + '(usableCaption disagreed with itself between stage 1 and the transcript stage)',
+          );
+        }
+        ({ audio } = await extractAudio(media, workDir));
+      }
       if (transcript === null && audio !== null && existsSync(audio)) {
         // preferredLanguage is passed through (not dropped): pickSenseVoiceLanguage
         // falls back to it when SenseVoice's own raw per-segment language signal

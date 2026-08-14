@@ -76,7 +76,13 @@ async function fetchPayload(entry: ServerEntry, urls: string[]): Promise<StatusP
  *  §3/§4: 'resolving' | 'downloading' | 'transcribing' | 'frames' for
  *  analyze items, 'downloading' only for a returnVideo:true resolve item),
  *  joined with the arrow the brief's render rules specify -- never a
- *  paraphrase invented for readability. */
+ *  paraphrase invented for readability.
+ *
+ *  Note that an analyze item legitimately shows no 'downloading' at all: a
+ *  transcript-only request answered from platform captions never fetches
+ *  the media (src/analyze.ts, stage 1), so its chain is resolving →
+ *  transcribing. That is an honest observation of what ran, not a dropped
+ *  stage -- do not "repair" it. */
 function stageChain(item: DecoratedItem): string {
   return item.stageHistory.map((s) => s.stage).join(' → ');
 }
