@@ -79,7 +79,10 @@ entry per video. The on-disk layout at `videos.length === 1` is unaffected — s
 below — but the JSON reply shape changed for every call, even N=1.
 
 **Batch layout: flat at N=1, `video-N/` at N>1.** A one-item `videos` array writes
-exactly where 0.1.x did, byte-identical. Two or more items each get their own
+exactly where 0.1.x did -- same paths, though no longer the same FILE SET: as of
+0.8.0 intermediates (candidate frames, the second video copy, caption files) stay
+in a scratch subdirectory and are discarded, so `source.mp4` alongside `work.mp4`
+is gone and only the video `videoPath` names is delivered. Two or more items each get their own
 `destinationPath/video-1/`, `video-2/`, ... (1-based, array order), so per-item
 `manifest.json`/`metadata.json` never collide. `itemDir` (`src/agent/analyzeTool.ts`)
 is the one place this decision lives — do not reimplement the branch elsewhere.

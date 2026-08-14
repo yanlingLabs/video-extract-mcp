@@ -38,18 +38,23 @@ function fakeYtDlp(opts: { withCaptions: boolean; video: string; captionFile?: b
   // captionFile defaults to withCaptions; setting it false independently
   // reproduces yt-dlp announcing a track whose file never made it to disk.
   const writesFile = (opts.captionFile ?? opts.withCaptions);
-  const writeCaptions = writesFile ? `cp "${vtt}" "${workDir}/source.en.vtt"` : ':';
+  const writeCaptions = writesFile ? `cp "${vtt}" "$dir/source.en.vtt"` : ':';
 
   const script = [
     '#!/bin/sh',
     `echo "$@" >> "${log}"`,
+    // Write where -o points, not to a baked-in path: the agent layer now
+    // hands yt-dlp a private scratch directory, so a fixture that ignored
+    // -o would drop its captions somewhere the pipeline never looks.
+    'out=""; prev=""; for a in "$@"; do [ "$prev" = "-o" ] && out="$a"; prev="$a"; done',
+    'dir=$(dirname "$out")',
     // Real yt-dlp writes subtitles on BOTH paths (--skip-download only skips
     // the media transfer), so the fake must too -- otherwise the test would
     // pass for the wrong reason on the download path.
     writeCaptions,
     'case " $* " in',
     '  *" --skip-download "*) ;;',
-    `  *) cp "${opts.video}" "${workDir}/source.mp4" ;;`,
+    `  *) cp "${opts.video}" "$dir/source.mp4" ;;`,
     'esac',
     `echo '{"title":"fake","duration":12,"extractor":"youtube",${subsJson}}'`,
     'exit 0',

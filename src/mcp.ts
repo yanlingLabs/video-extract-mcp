@@ -31,8 +31,10 @@ const PLATFORMS =
   + 'failure status rather than throwing.';
 
 const LIFETIME =
-  'Artifacts written to destinationPath are NEVER deleted by this tool -- pick a '
-  + 'temp directory if you want them ephemeral. In background-task mode the task '
+  'RESULTS written to destinationPath are NEVER deleted by this tool -- pick a '
+  + 'temp directory if you want them ephemeral. (While a video is being processed a '
+  + 'scratch subdirectory appears there and is removed when the item finishes; it '
+  + 'holds intermediates, never results.) In background-task mode the task '
   + 'handle expires (default 30 minutes) and dies with the server process, but the '
   + 'files are the durable result and survive both.';
 

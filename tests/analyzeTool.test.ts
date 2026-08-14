@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { mkdtempSync, existsSync, readFileSync, writeFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, basename } from 'node:path';
 
 const analyzeMock = vi.fn();
 vi.mock('../src/analyze.js', () => ({ analyzeVideo: (...a: unknown[]) => analyzeMock(...a) }));
@@ -60,7 +60,16 @@ describe('analyzeVideoTool', () => {
     analyzeMock.mockResolvedValue(manifest());
     const dir = mkdtempSync(join(tmpdir(), 'norma-at-'));
     await analyzeVideoTool({ destinationPath: dir, videos: [{ pathOrUrl: 'https://x/v' }] });
-    expect(analyzeMock.mock.calls[0]![1]).toMatchObject({ destinationPath: dir, outDir: dir });
+    // outDir is now a private scratch directory INSIDE destinationPath, not
+    // destinationPath itself: the pipeline writes every candidate frame and a
+    // second copy of the video, and only the selected results are moved out
+    // (src/agent/workdir.ts). Inside, not os.tmpdir(), so delivery is a
+    // same-filesystem rename and /status can still see the bytes grow.
+    const passed = analyzeMock.mock.calls[0]![1] as { destinationPath: string; outDir: string };
+    expect(passed.destinationPath).toBe(dir);
+    expect(passed.outDir).not.toBe(dir);
+    expect(passed.outDir.startsWith(dir)).toBe(true);
+    expect(basename(passed.outDir)).toMatch(/^\.work-\d+-\d+$/);
   });
 
   it('forwards language as the explicit override (spec §4)', async () => {

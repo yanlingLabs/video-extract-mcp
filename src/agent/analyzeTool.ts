@@ -4,6 +4,7 @@ import type { AnalyzeStage, FrameMode, Manifest, Transcript } from '../types.js'
 import { analyzeVideo } from '../analyze.js';
 import { buildManifest } from '../manifest.js';
 import { writeManifest, writeTranscript } from './artifacts.js';
+import { mintWorkDir, sweepAbandonedWorkDirs, discardWorkDir, deliverFile } from './workdir.js';
 import { runWithStatus, safe } from '../status/context.js';
 
 /** Above this, the transcript goes to disk only -- a long transcript is
@@ -105,72 +106,110 @@ async function analyzeOneVideoAttempt(
   // a re-encoded working copy (plus its frames/ subdirectory) into whatever
   // outDir it is given (src/analyze.ts -> src/media/ffmpeg.ts's
   // normalize()) -- there is no way to get frames out of it without also
-  // getting that copy in the same directory. For a URL source that copy IS
-  // the deliverable (the agent has no other local copy), so outDir stays
-  // destinationPath as usual. For an already-local source it would be a
-  // second, disk-doubling copy of a file the agent already placed, so
-  // outDir is left unset -- analyzeVideo falls back to its own private
-  // mkdtempSync'd directory (src/analyze.ts) -- and only the (cheap) frame
-  // thumbnails are relocated into destinationPath below.
+  // getting that copy in the same directory. For an already-local source
+  // that copy would be a second, disk-doubling copy of a file the agent
+  // already placed, so outDir is left unset -- analyzeVideo falls back to
+  // its own private mkdtempSync'd directory (src/analyze.ts) -- and only
+  // the (cheap) frame thumbnails are relocated into destinationPath below.
   const local = isLocalPath(item.pathOrUrl);
 
-  const raw = await analyzeVideo(item.pathOrUrl, {
-    start: item.start,
-    end: item.end,
-    frames: item.frames,
-    maxFrames: item.maxFrames,
-    transcript: item.transcript,
-    // Spec §4: an explicit language is the override; it outranks metadata.
-    preferredLanguage: item.language,
-    destinationPath,
-    onStage,
-    ...(local ? {} : { outDir: destinationPath }),
-  });
+  // A URL source used to pass destinationPath as outDir, which handed the
+  // caller every intermediate the pipeline produces: one real run left 258
+  // candidate JPEGs for a 40-frame request, plus BOTH the download and its
+  // normalized re-encode -- 390 MB delivered for a result of 40 images and a
+  // transcript. It now works in a private scratch directory (src/agent/
+  // workdir.ts explains why that lives inside destinationPath rather than
+  // in os.tmpdir()) and only the deliverables are moved out.
+  //
+  // Swept on entry, before minting: a killed run's scratch is collected by
+  // the next call into that directory. Nothing else can collect it -- the
+  // age-gated partials sweep only ever looks inside the download's own
+  // directory, which is now the abandoned scratch itself.
+  const workDir = local ? null : (sweepAbandonedWorkDirs(destinationPath), mintWorkDir(destinationPath));
 
-  // Spec §2.1: for a local source, relocate the frame thumbnails into
-  // destinationPath (a handful of JPEGs, not the video) and point
-  // source.filePath back at the file the agent already has, rather than at
-  // analyzeVideo's private, ephemeral normalized copy -- which is kept OUT
-  // of destinationPath specifically so it never persists as a second copy
-  // of the source (see the outDir comment above).
-  const m: Manifest = local
-    ? {
-        ...raw,
-        source: raw.source.filePath ? { ...raw.source, filePath: item.pathOrUrl } : raw.source,
-        frames: raw.frames.map((f) => ({ ...f, image: relocateFrame(destinationPath, f.image) })),
-      }
-    : raw;
+  try {
+    const raw = await analyzeVideo(item.pathOrUrl, {
+      start: item.start,
+      end: item.end,
+      frames: item.frames,
+      maxFrames: item.maxFrames,
+      transcript: item.transcript,
+      // Spec §4: an explicit language is the override; it outranks metadata.
+      preferredLanguage: item.language,
+      destinationPath,
+      onStage,
+      ...(workDir ? { outDir: workDir } : {}),
+    });
 
-  // Fix 6: clean up analyzeVideo's own working copy once it has been
-  // superseded above -- see cleanupOrphanedCopy's doc comment for why this
-  // order (after computing `m`, comparing against the pre-rewrite `raw`) is
-  // what keeps it from ever touching a file the reply still points at.
-  cleanupOrphanedCopy(raw.source.filePath, m.source.filePath);
+    // Spec §2.1: for a local source, relocate the frame thumbnails into
+    // destinationPath (a handful of JPEGs, not the video) and point
+    // source.filePath back at the file the agent already has, rather than at
+    // analyzeVideo's private, ephemeral normalized copy -- which is kept OUT
+    // of destinationPath specifically so it never persists as a second copy
+    // of the source (see the outDir comment above).
+    // For a URL source, move the deliverables out of the scratch directory:
+    // the SELECTED frames (not the candidate pool they were chosen from) and
+    // the one video file the reply will point at. Everything else the pipeline
+    // wrote -- rejected candidates, the second copy of the video, the caption
+    // files the transcript was parsed out of -- stays behind and is discarded
+    // with the scratch directory in the finally below.
+    const m: Manifest = local
+      ? {
+          ...raw,
+          source: raw.source.filePath ? { ...raw.source, filePath: item.pathOrUrl } : raw.source,
+          frames: raw.frames.map((f) => ({ ...f, image: relocateFrame(destinationPath, f.image) })),
+        }
+      : workDir
+        ? {
+            ...raw,
+            source: raw.source.filePath
+              ? { ...raw.source, filePath: deliverFile(destinationPath, workDir, raw.source.filePath) }
+              : raw.source,
+            frames: raw.frames.map((f) => ({ ...f, image: deliverFile(destinationPath, workDir, f.image) })),
+          }
+        : raw;
 
-  const manifestPath = writeManifest(destinationPath, m);
+    // Fix 6: clean up analyzeVideo's own working copy once it has been
+    // superseded above -- see cleanupOrphanedCopy's doc comment for why this
+    // order (after computing `m`, comparing against the pre-rewrite `raw`) is
+    // what keeps it from ever touching a file the reply still points at.
+    // Scoped to the local path deliberately. There, `m` points at the caller's
+    // own file and `raw` at an orphaned re-encode worth deleting. On the URL
+    // path the two differ because the file MOVED, and its old location is
+    // already gone -- and the whole scratch directory is removed below anyway.
+    if (local) cleanupOrphanedCopy(raw.source.filePath, m.source.filePath);
 
-  // Spec §3: the transcript is ALWAYS written, and additionally returned
-  // inline only when short enough to be worth the context.
-  let transcriptPath: string | undefined;
-  let inline: Transcript | undefined;
-  if (m.transcript) {
-    transcriptPath = writeTranscript(destinationPath, m.transcript);
-    if (transcriptChars(m.transcript) <= INLINE_TRANSCRIPT_MAX_CHARS) inline = m.transcript;
+    const manifestPath = writeManifest(destinationPath, m);
+
+    // Spec §3: the transcript is ALWAYS written, and additionally returned
+    // inline only when short enough to be worth the context.
+    let transcriptPath: string | undefined;
+    let inline: Transcript | undefined;
+    if (m.transcript) {
+      transcriptPath = writeTranscript(destinationPath, m.transcript);
+      if (transcriptChars(m.transcript) <= INLINE_TRANSCRIPT_MAX_CHARS) inline = m.transcript;
+    }
+
+    return {
+      status: m.source.status,
+      ...(m.source.reason ? { reason: m.source.reason } : {}),
+      title: m.source.title,
+      duration: m.source.duration,
+      frameCount: m.frames.length,
+      framePaths: m.frames.map((f) => f.image),
+      ...(inline ? { transcript: inline } : {}),
+      ...(transcriptPath ? { transcriptPath } : {}),
+      manifestPath,
+      ...(m.source.filePath ? { videoPath: m.source.filePath } : {}),
+      warnings: m.processing.warnings,
+    };
+  } finally {
+    // Every return above is inside the try, and analyzeVideo can also throw
+    // (analyzeOneVideo's own catch turns that into a failure result) -- so a
+    // finally is the only placement that cannot leave a full video and a few
+    // hundred JPEGs behind in the caller's directory.
+    if (workDir) discardWorkDir(workDir);
   }
-
-  return {
-    status: m.source.status,
-    ...(m.source.reason ? { reason: m.source.reason } : {}),
-    title: m.source.title,
-    duration: m.source.duration,
-    frameCount: m.frames.length,
-    framePaths: m.frames.map((f) => f.image),
-    ...(inline ? { transcript: inline } : {}),
-    ...(transcriptPath ? { transcriptPath } : {}),
-    manifestPath,
-    ...(m.source.filePath ? { videoPath: m.source.filePath } : {}),
-    warnings: m.processing.warnings,
-  };
 }
 
 /**
