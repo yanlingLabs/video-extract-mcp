@@ -40,8 +40,10 @@ Then point your MCP client at the package. There are two ways, and they differ i
 **Option A — `npx`, nothing installed.** Simplest, and it picks up new releases on its own.
 
 ```bash
-claude mcp add --scope user video-extract -- npx -y @yanlinglabs/video-extract-mcp
+claude mcp add --scope user video-extract -- npx -y @yanlinglabs/video-extract-mcp@latest
 ```
+
+**The `@latest` is load-bearing.** Without it npx pins to whatever version it first cached and never moves again — measured: with 0.7.0 published, a bare-spec invocation still served the 0.4.1 it had cached, and went on doing so even after a newer copy was already present in the npx cache. `@latest` re-resolves on every cold start.
 
 **Option B — installed globally.** Starts faster and gives you the `video-extract` status CLI as a real command.
 
@@ -52,21 +54,21 @@ claude mcp add --scope user video-extract -- video-extract-mcp
 
 |  | `npx` (A) | global install (B) |
 |---|---|---|
-| Updates | automatic — resolves the latest version on each cold start | **manual: `npm update -g @yanlinglabs/video-extract-mcp`**. You stay on the installed version until you run it |
+| Updates | automatic **only with `@latest` in the spec** — a bare `npx -y @yanlinglabs/video-extract-mcp` pins to the first version it cached and never updates | **manual: `npm update -g @yanlinglabs/video-extract-mcp`**. You stay on the installed version until you run it |
 | Startup | ~0.9s (npm resolution on every launch) | ~0.1s |
 | `video-extract status` in your shell | not on `PATH` — needs `npx -y -p @yanlinglabs/video-extract-mcp video-extract status` | works directly |
 | Working directory | must not be this package's own checkout (see below) | irrelevant |
 
 Neither affects what agents can do: an agent checks on background work over HTTP using the `statusUrl` handed to it in the reply, never a shell command. The CLI is for humans.
 
-Or in any MCP client's config — `"command": "npx", "args": ["-y", "@yanlinglabs/video-extract-mcp"]` for A, or `"command": "video-extract-mcp"` with no args for B:
+Or in any MCP client's config — `"command": "npx", "args": ["-y", "@yanlinglabs/video-extract-mcp@latest"]` for A, or `"command": "video-extract-mcp"` with no args for B:
 
 ```json
 {
   "mcpServers": {
     "video-extract": {
       "command": "npx",
-      "args": ["-y", "@yanlinglabs/video-extract-mcp"]
+      "args": ["-y", "@yanlinglabs/video-extract-mcp@latest"]
     }
   }
 }
