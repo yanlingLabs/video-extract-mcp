@@ -60,6 +60,23 @@ describe('createStatusRegistry', () => {
     expect(r.snapshot().items[0]!.stageHistory.map((s) => s.stage)).toEqual(['resolving']);
   });
 
+  it('finish() is idempotent -- the FIRST call wins; a later call on an already-finished item is a harmless no-op (final review, Important 2 backstop)', () => {
+    // src/mcp.ts now finishes an item TWICE in the ordinary case: once from
+    // the new per-item onItemDone seam (Important 2's fix, fires as soon as
+    // THIS item's own promise settles) and once more from the pre-existing
+    // post-Promise.all forEach, kept as a backstop for any item the seam
+    // somehow misses. Both must be safe to call -- the second must never
+    // clobber the first item's genuine outcome (e.g. 'ok') with a stale or
+    // wrong one (e.g. a backstop's 'wrapper_failed').
+    const r = createStatusRegistry();
+    const id = r.register({ url: 'u', tool: 'analyze', destinationPath: '/d' });
+    r.finish(id, 'ok');
+    const firstOutcome = r.snapshot().items[0]!.outcome;
+    expect(firstOutcome).toMatchObject({ status: 'ok' });
+    r.finish(id, 'wrapper_failed');
+    expect(r.snapshot().items[0]!.outcome).toEqual(firstOutcome);
+  });
+
   it('ids stay unique and monotonic across an eviction', () => {
     const r = createStatusRegistry(1);
     const a = r.register({ url: 'A', tool: 'analyze', destinationPath: '/d' });

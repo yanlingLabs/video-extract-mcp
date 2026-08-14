@@ -248,19 +248,38 @@ export interface ResolveRunHooks {
   onStage?: (itemIndex: number, stage: string) => void;
   onSpawn?: (itemIndex: number, pid: number, command: string) => void;
   onSpawnEnded?: (itemIndex: number) => void;
+  /** Final whole-branch review, Important finding 2 -- resolve_video's
+   *  counterpart to AnalyzeRunHooks.onItemDone (src/agent/analyzeTool.ts):
+   *  fires the instant THIS item's own promise settles, inside the
+   *  per-item chain below, not after the batch's own Promise.all. Same
+   *  rationale as analyzeVideoTool -- driving a per-item "done" signal off
+   *  Promise.all reports every item as still-running until the whole
+   *  batch's slowest item finishes. `status` is the item's own
+   *  result.status; resolveOneVideo never rejects (same no-throw contract
+   *  as analyzeOneVideo), so there is no failure branch to add here. */
+  onItemDone?: (itemIndex: number, status: string) => void;
 }
 
 export async function resolveVideoTool(args: ResolveToolArgs, hooks?: ResolveRunHooks): Promise<ResolveToolResult> {
   const n = args.videos.length;
-  const videos = await Promise.all(args.videos.map((item, i) =>
-    runWithStatus(
+  const videos = await Promise.all(args.videos.map((item, i) => {
+    const result = runWithStatus(
       {
         onStage: (s) => hooks?.onStage?.(i, s),
         onSpawn: (pid, cmd) => hooks?.onSpawn?.(i, pid, cmd),
         onSpawnEnded: () => hooks?.onSpawnEnded?.(i),
       },
       () => resolveOneVideo(item, itemDir(args.destinationPath, i, n)),
-    ),
-  ));
+    );
+    // Final whole-branch review, Important finding 2: see
+    // analyzeVideoTool's identical wiring (src/agent/analyzeTool.ts) for
+    // the full rationale -- chained onto THIS item's own promise so a fast
+    // item's completion is reported the instant it happens, not once every
+    // item in the batch has.
+    return result.then((r) => {
+      hooks?.onItemDone?.(i, r.status);
+      return r;
+    });
+  }));
   return { videos };
 }

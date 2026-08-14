@@ -237,6 +237,19 @@ export interface AnalyzeRunHooks {
    *  runs) would reach too late to do the same job. See src/mcp.ts's
    *  runAnalyzeExecution for the full rationale. */
   onItemStart?: (itemIndex: number) => void;
+  /** Final whole-branch review, Important finding 2: fires the instant THIS
+   *  item's own execution settles -- inside the per-item promise chain
+   *  below, not after the batch's own Promise.all. Without this, a caller
+   *  driving a per-item "done" signal off Promise.all (src/mcp.ts's
+   *  registerItems/statusRegistry.finish() wiring) reports every item as
+   *  still-running until the whole batch's slowest item finishes, even
+   *  though a fast sibling released its pool slot and genuinely completed
+   *  much earlier -- exactly the "stuck" signature the status channel's own
+   *  docs teach an agent to read as a hung item. `status` is the item's own
+   *  result.status (never thrown -- analyzeOneVideo's own contract is to
+   *  return a status-carrying result, not reject), so this never needs a
+   *  failure branch of its own. */
+  onItemDone?: (itemIndex: number, status: string) => void;
 }
 
 /** Spec §4: one video writes flat (today's layout, byte-identical); several
@@ -250,8 +263,8 @@ export async function analyzeVideoTool(
 ): Promise<AnalyzeToolResult> {
   const n = args.videos.length;
   const exec = hooks?.run ?? (<T,>(fn: () => Promise<T>) => fn());
-  const videos = await Promise.all(args.videos.map((item, i) =>
-    exec(
+  const videos = await Promise.all(args.videos.map((item, i) => {
+    const result = exec(
       () => {
         hooks?.onItemStart?.(i);
         return runWithStatus(
@@ -278,7 +291,25 @@ export async function analyzeVideoTool(
         );
       },
       (ahead) => hooks?.onQueued?.(i, ahead),
-    ),
-  ));
+    );
+    // Final whole-branch review, Important finding 2: chained onto THIS
+    // item's own promise, not onto Promise.all below -- firing here means
+    // onItemDone runs the instant this one item settles, however long its
+    // siblings still have left, rather than only once every item in the
+    // batch has (src/mcp.ts's statusRegistry.finish() call used to be
+    // wired to the latter, so a fast item read as still-running -- frozen
+    // bytes, no childPid, a climbing "in stage" age -- for as long as 18s
+    // while its slowest sibling ran, the exact signature the status
+    // channel's own docs teach an agent to read as stuck). analyzeOneVideo
+    // never rejects (it absorbs its own failures into a status-carrying
+    // result), so there is no rejection branch to mirror here; a real
+    // rejection (a queued item's TaskCancelledError, at the mcp.ts layer
+    // above `exec`) simply skips this .then(), and that layer keeps its own
+    // post-Promise.all finish() as the backstop for exactly that case.
+    return result.then((r) => {
+      hooks?.onItemDone?.(i, r.status);
+      return r;
+    });
+  }));
   return { videos };
 }

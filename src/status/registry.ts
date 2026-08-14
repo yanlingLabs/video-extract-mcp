@@ -47,7 +47,23 @@ export function createStatusRegistry(cap = 500): StatusRegistry {
     stage(id, stage) { byId(id)?.stageHistory.push({ stage, at: Date.now() }); },
     spawn(id, pid, command) { const i = byId(id); if (i) { i.childPid = pid; i.childCommand = command; } },
     spawnEnded(id) { const i = byId(id); if (i) { delete i.childPid; delete i.childCommand; } },
-    finish(id, status) { const i = byId(id); if (i) i.outcome = { status, at: Date.now() }; enforceCap(); },
+    // Final whole-branch review, Important finding 2: idempotent by design,
+    // not merely by convention -- src/mcp.ts now calls finish() on every
+    // item TWICE in the ordinary case (the new per-item onItemDone seam,
+    // firing as soon as THIS item's own promise settles, plus the
+    // pre-existing post-Promise.all forEach kept as a backstop for
+    // whatever the seam misses). The FIRST call's outcome must stick; a
+    // later call on an already-finished item (an id already carrying an
+    // `outcome`) is a harmless no-op rather than a clobber -- otherwise a
+    // slower backstop write could silently overwrite a genuine 'ok' with a
+    // stale or wrong status. A bogus id (already absent) still falls
+    // through to enforceCap() unconditionally, matching this function's
+    // pre-existing, harmlessly-redundant behavior on that path.
+    finish(id, status) {
+      const i = byId(id);
+      if (i && i.outcome === undefined) i.outcome = { status, at: Date.now() };
+      enforceCap();
+    },
     snapshot(urls) {
       const filtered = urls && urls.length > 0 ? items.filter((i) => urls.includes(i.url)) : items;
       return { items: structuredClone(filtered), evicted };

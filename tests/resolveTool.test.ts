@@ -517,4 +517,27 @@ describe('batching (spec §3-§5)', () => {
     expect(r.videos[1]!.status).toBe('not_found');
     expect(r.videos[1]!.metadataPath).toBe(join(dir, 'video-2', 'metadata.json'));
   });
+
+  it('onItemDone fires per item as ITS OWN promise settles, not after the whole batch (final review, Important 2)', async () => {
+    // Same mandate and discriminating shape as analyzeVideoTool's own
+    // pinning test (tests/analyzeTool.test.ts): item 0 ('/slow') is
+    // delayed well past item 1 ('/fast'). A correct implementation (hook
+    // attached to each item's OWN promise, inside Promise.all's map) fires
+    // index 1 first, in real settlement order; a Promise.all-gated bug can
+    // only ever fire in array order (0 then 1) regardless of which item
+    // actually finished first.
+    resolveMock.mockImplementation(async (url: string) => {
+      if (url.endsWith('/slow')) await new Promise((res) => setTimeout(res, 30));
+      return ok();
+    });
+    const dir = mkdtempSync(join(tmpdir(), 'norma-rt-itemdone-'));
+    const done: Array<[number, string]> = [];
+
+    await resolveVideoTool(
+      { destinationPath: dir, videos: [{ url: 'https://x.test/slow' }, { url: 'https://x.test/fast' }] },
+      { onItemDone: (i, status) => done.push([i, status]) },
+    );
+
+    expect(done).toEqual([[1, 'ok'], [0, 'ok']]);
+  });
 });

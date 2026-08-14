@@ -346,6 +346,34 @@ describe('batching (spec §3-§5)', () => {
     expect(queued).toContainEqual([1, 1]);
   });
 
+  it('onItemDone fires per item as ITS OWN promise settles, not after the whole batch (final review, Important 2)', async () => {
+    // Final whole-branch review, Important finding 2: src/mcp.ts drives
+    // statusRegistry.finish() off this hook so a fast item reads as done
+    // the instant it actually finishes, not 18s later when its slowest
+    // sibling does. Item 0 ('/slow') is delayed well past item 1 ('/fast').
+    // A CORRECT implementation (onItemDone attached to each item's OWN
+    // promise, inside Promise.all's own map) fires index 1 first, in real
+    // settlement order. The bug this hook exists to fix -- driving a
+    // per-item "done" signal off a forEach over Promise.all's own resolved
+    // array -- can only ever fire in ARRAY order (index 0, then 1),
+    // regardless of which item actually finished first: that wrong-order
+    // signature is exactly what this test's ordering assertion below
+    // catches, without needing a separate real-time witness.
+    analyzeMock.mockImplementation(async (url: string) => {
+      if (url.endsWith('/slow')) await new Promise((res) => setTimeout(res, 30));
+      return manifest({ source: { url, platform: 'p', title: 'T', duration: 10, resolvedBy: 'ytdlp', status: 'ok', filePath: '/x/work.mp4' } });
+    });
+    const dir = mkdtempSync(join(tmpdir(), 'norma-batch-itemdone-'));
+    const done: Array<[number, string]> = [];
+
+    await analyzeVideoTool(
+      { destinationPath: dir, videos: [{ pathOrUrl: 'https://x.test/slow' }, { pathOrUrl: 'https://x.test/fast' }] },
+      { onItemDone: (i, status) => done.push([i, status]) },
+    );
+
+    expect(done).toEqual([[1, 'ok'], [0, 'ok']]);
+  });
+
   it('a hooks.onStage that throws on "resolving" does not turn an otherwise-fine analyze call into extractor_failed (Task 4 mandate A)', async () => {
     // analyzeOneVideo's own onStage parameter -- the bridge lambda at
     // analyzeTool.ts's analyzeVideoTool, `safe((s) => hooks?.onStage?.(i, s))`

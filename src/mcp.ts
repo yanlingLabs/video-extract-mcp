@@ -346,6 +346,14 @@ function runAnalyzeExecution(
     onQueued: (i, ahead) => onUpdate?.(label(i, n, `queued, ${ahead} ahead`)),
     onSpawn: (i, pid, cmd) => statusRegistry.spawn(ids[i]!, pid, cmd),
     onSpawnEnded: (i) => statusRegistry.spawnEnded(ids[i]!),
+    // Final whole-branch review, Important finding 2: finishes THIS item
+    // the instant its own promise settles (analyzeVideoTool's per-item
+    // chain -- see that file's own comment), instead of only once every
+    // item in the batch has. The forEach below, after runAnalyzeExecution
+    // resolves, stays in place as a backstop for any id this seam somehow
+    // misses; registry.finish() is idempotent (first write wins), so
+    // running both is harmless, not a double-write hazard.
+    onItemDone: (i, status) => statusRegistry.finish(ids[i]!, status),
   });
 }
 
@@ -724,6 +732,12 @@ export function buildServer(opts?: { analyzeSlots?: SlotPool; statusPort?: numbe
               onStage: (i, s) => statusRegistry.stage(ids[i]!, s),
               onSpawn: (i, pid, cmd) => statusRegistry.spawn(ids[i]!, pid, cmd),
               onSpawnEnded: (i) => statusRegistry.spawnEnded(ids[i]!),
+              // Final whole-branch review, Important finding 2: same
+              // rationale as analyze_video's own runAnalyzeExecution wiring
+              // above -- finishes THIS item the instant its own promise
+              // settles, not only once the whole batch has. The forEach
+              // below stays as a backstop; finish() is idempotent.
+              onItemDone: (i, status) => statusRegistry.finish(ids[i]!, status),
             }).catch((e: unknown) => {
               // Task 4: same reasoning as analyze_video's own catch above --
               // resolve_video never queues, so every rejection here is a
