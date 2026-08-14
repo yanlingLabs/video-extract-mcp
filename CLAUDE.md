@@ -143,6 +143,17 @@ records a `processing.warnings` entry, so an empty transcript is distinguishable
 from a video with no speech. A stage skipped *by design* (frame-mode short circuits)
 is not a degradation and must not fabricate a warning.
 
+**Partial downloads are written under `.part` and promoted on completion.**
+`src/util/partials.ts` owns this. The reason is the shape where none of our
+cleanup code runs at all — a killed process, a crash, a power cut: the only
+protection left is the name the bytes were written under, so a truncated
+file can never be mistaken for a finished `source.mp4`. Failures sweep their
+own partial immediately; a download entering a directory sweeps `.part`
+files older than six hours (the age gate is what stops it deleting a
+*concurrent* download's live bytes). This does not weaken the never-delete
+rule: `.part` is ours, everything else is the caller's, and a test asserts
+that manifests/transcripts/frames/completed media survive a sweep at any age.
+
 **`src/types.ts` is the single source of truth** for shared types.
 
 **No Python.** Node 26, ESM, TypeScript strict with `noUncheckedIndexedAccess`.

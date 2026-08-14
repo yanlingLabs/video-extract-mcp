@@ -1,4 +1,5 @@
 import { unlink } from 'node:fs/promises';
+import { partialPathFor, promotePartial, sweepStalePartials } from '../util/partials.js';
 import { join } from 'node:path';
 import type { VideoResolver, ResolveOptions, ResolveResult, ResolveFailure } from '../types.js';
 import { probe } from '../media/ffmpeg.js';
@@ -369,6 +370,10 @@ export class WeChatHeadlessResolver implements VideoResolver {
    *  Downloads exactly like DirectMediaResolver so downstream code sees a local file either way. */
   private async download(mediaUrl: string, opts: ResolveOptions, title: string): Promise<ResolveResult> {
     const out = join(opts.workDir, 'source.mp4');
+    // Same partial-then-promote discipline as direct.ts: a killed process
+    // must never leave bytes under the finished name (src/util/partials.ts).
+    const partial = partialPathFor(out);
+    sweepStalePartials(opts.workDir);
     try {
       // §4: gated structurally, same as direct.ts -- download() is only ever
       // reached from resolve() after its own opts.returnVideo === false
@@ -378,16 +383,19 @@ export class WeChatHeadlessResolver implements VideoResolver {
       // Bounded (unlike the API calls' short 15s REQUEST_TIMEOUT_MS, a media
       // body legitimately takes minutes): a stalled CDN aborts into the
       // catch below instead of hanging analyze_video indefinitely.
-      const dl = await fetchToFile(mediaUrl, out, { timeoutMs: MEDIA_DOWNLOAD_TIMEOUT_MS });
-      if (dl.status === 404) {
-        return { status: 'not_found', resolvedBy: 'wechat', message: 'Media URL returned HTTP 404.' };
-      }
+      const dl = await fetchToFile(mediaUrl, partial, { timeoutMs: MEDIA_DOWNLOAD_TIMEOUT_MS });
       if (!dl.ok) {
+        // Both non-ok returns bypass the catch below, so clean up here.
+        await unlink(partial).catch(() => {});
+        if (dl.status === 404) {
+          return { status: 'not_found', resolvedBy: 'wechat', message: 'Media URL returned HTTP 404.' };
+        }
         // Not auth_required/auth_expired: the yuanbao cookie does not apply to this URL (it is
         // self-authenticated by its own token+sign params), so re-authenticating would not help.
         // A failure here more likely means the token/sign expired between resolve and download.
         return { status: 'extractor_failed', resolvedBy: 'wechat', message: `HTTP ${dl.status} downloading media` };
       }
+      promotePartial(out);
       const p = await probe(out);
       return {
         status: 'ok', filePath: out, platform: 'wechat_channels', title, duration: p.duration,
@@ -405,7 +413,9 @@ export class WeChatHeadlessResolver implements VideoResolver {
         rangeApplied: false,
       };
     } catch (e) {
-      await unlink(out).catch(() => {}); // best-effort: never leave a partial download behind
+      // Both names: the catch can fire before OR after promotion.
+      await unlink(partial).catch(() => {});
+      await unlink(out).catch(() => {});
       return { status: 'extractor_failed', resolvedBy: 'wechat', message: `Failed to download media: ${(e as Error).message}` };
     }
   }

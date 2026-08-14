@@ -10,7 +10,7 @@ Built for AI agents. Two MCP tools, no cloud, no API keys, no Python.
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%E2%89%A526-brightgreen.svg)](https://nodejs.org)
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-blue.svg)](https://www.typescriptlang.org/)
-[![Tests](https://img.shields.io/badge/tests-550%20passing-success.svg)](#testing)
+[![Tests](https://img.shields.io/badge/tests-572%20passing-success.svg)](#testing)
 [![MCP](https://img.shields.io/badge/MCP-server-orange.svg)](https://modelcontextprotocol.io)
 
 ---
@@ -274,6 +274,8 @@ curl 'http://127.0.0.1:PORT/status?url=https://youtu.be/AbC123xyz'   # repeatabl
 
 **Stopping something.** There is no `cancel` subcommand for this channel — stopping is a plain `kill` against a pid the status output just showed you, and the two targets you can aim it at behave differently, on purpose: killing an item's child process makes that item fail honestly while the batch continues and the task itself still completes; killing the server's own pid stops everything, and whatever was already written to `destinationPath` survives, exactly as if the server had exited normally.
 
+**Half-downloaded files are cleaned up.** A download in flight is written under a `.part` name and only renamed once every byte has arrived, so a killed process can never leave something that *looks* like a finished video. If the child process dies (the kill above, or a network failure), the abandoned `.part` is removed immediately. If the whole machine goes down mid-download there is nobody left to clean up — so the next download into that same directory sweeps any `.part` older than six hours, which is how the crash and reboot cases resolve themselves. Only `.part` files are ever removed: manifests, transcripts, frames and completed media are never touched.
+
 A server that exits takes its in-memory status history with it — there is no cross-restart persistence, by design (see `docs/follow-ups.md`). Nothing about that loses what matters: the files at `destinationPath` are the durable record either way.
 
 ## What "important frame" actually means
@@ -313,7 +315,7 @@ WeChat Channels (视频号) support is worth calling out: it resolves **headless
 
 What is verified:
 
-- 550 automated tests pass, including integration tests driving a real MCP client end-to-end against synthetic video fixtures — among them the status channel's own kill-workflow test: observe a live item's child pid via `/status`, kill it, confirm that item fails honestly while its batch sibling still completes.
+- 572 automated tests pass, including integration tests driving a real MCP client end-to-end against synthetic video fixtures — among them the status channel's own kill-workflow test: observe a live item's child pid via `/status`, kill it, confirm that item fails honestly while its batch sibling still completes.
 - The WeChat resolution protocol was verified live, end to end, returning a real MP4.
 - Caption-tier selection was verified against the installed yt-dlp's own source.
 - The memory rate and single-frame latency are measured numbers, not estimates.

@@ -2,6 +2,7 @@ import { readdirSync, existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { VideoResolver, ResolveOptions, ResolveResult, ResolveFailure, CaptionTrack, VideoMetadata } from '../types.js';
 import { run } from '../util/run.js';
+import { sweepStalePartials } from '../util/partials.js';
 import { probe } from '../media/ffmpeg.js';
 import { baseLang } from '../transcript/routing.js';
 import { statusCallbacks } from '../status/context.js';
@@ -252,8 +253,22 @@ export class YtDlpResolver implements VideoResolver {
     // this SAME run() call on the metadata-only path (only an added flag),
     // so placement alone cannot gate it the way it can in direct.ts/wechat.ts.
     if (wantsDownload) statusCallbacks()?.onStage?.('downloading');
+    // Clear abandoned partials from a previous run that was killed or
+    // crashed in this same directory before starting a new one. yt-dlp
+    // writes `source.<ext>.part` while downloading and promotes it itself
+    // on success, so anything older than the age gate is orphaned bytes
+    // nothing will ever finish (src/util/partials.ts).
+    if (wantsDownload) sweepStalePartials(opts.workDir);
     const r = await run('yt-dlp', [...args, url], { timeoutMs: 15 * 60_000 });
-    if (r.code !== 0) return classifyYtDlpError(r.stderr);
+    if (r.code !== 0) {
+      // yt-dlp cleans up after its own graceful failures inconsistently and
+      // not at all when killed; either way the partial is ours to remove
+      // here, since this return abandons the download for good. Age 0: this
+      // call's own partial is by definition current, and no concurrent run
+      // can be downloading to the same `source.*` name in this directory.
+      sweepStalePartials(opts.workDir, 0);
+      return classifyYtDlpError(r.stderr);
+    }
 
     let meta: YtDlpMeta = {};
     const lastJson = r.stdout.trim().split('\n').filter((l) => l.startsWith('{')).pop();
@@ -288,7 +303,10 @@ export class YtDlpResolver implements VideoResolver {
     }
 
     const produced = readdirSync(opts.workDir).find((f) => /^source\.(mp4|mkv|webm|m4v)$/.test(f));
-    if (!produced) return { status: 'extractor_failed', message: 'yt-dlp produced no media file', resolvedBy: 'ytdlp' };
+    if (!produced) {
+      sweepStalePartials(opts.workDir, 0);   // no usable media: drop any partial too
+      return { status: 'extractor_failed', message: 'yt-dlp produced no media file', resolvedBy: 'ytdlp' };
+    }
     const filePath = join(opts.workDir, produced);
     const p = await probe(filePath);
 
