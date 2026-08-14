@@ -37,6 +37,12 @@ Most of the risk here is not in this codebase's own logic. It is in what the too
 - **It writes to a caller-chosen `destinationPath`**, and to a cache directory. It never deletes a finished artifact — manifests, transcripts, frames and completed videos all stay. It *does* delete one narrow class of file: its own abandoned partial downloads, matched on the `source.*` names it downloads under and only once they are more than six hours old. A case where it removes a file it did not create, or a completed one, is a real bug. So are writes outside those two locations.
 - **It runs a localhost HTTP status endpoint** — see below.
 - **It reads a WeChat session cookie** from `VIDEO_EXTRACT_WECHAT_COOKIE` when resolving WeChat Channels links. The value is read from the environment and sent to Tencent's endpoints; it is never logged and never written to disk.
+- **It can be given a cookie jar** via `VIDEO_EXTRACT_COOKIES_FILE` or `VIDEO_EXTRACT_COOKIES_FROM_BROWSER`, which yt-dlp uses to authenticate to whichever domains the jar covers. Three properties hold, and a break in any of them is a vulnerability worth reporting:
+  - **Environment only.** Neither can be set per-request. A caller that could name a cookie file could have any readable path on the machine sent to a remote host; a caller that could name a browser could lift a live session. Credentials are the operator's to configure, never the agent's.
+  - **The jar is copied, never used in place.** `--cookies FILE` rewrites the file it is given; the copy lives in a private temp directory (mode 0700), is passed instead, and is removed in a `finally` so it does not survive a failed call. It is never written into `destinationPath`.
+  - **Only a path is ever passed as an argument** — jar contents never appear in an argv, log, manifest, or the status endpoint.
+
+  Note that cookies are sent to whatever domain a fetched URL belongs to, scoped by the jar's own domain entries. If your agent accepts URLs from untrusted input *and* you have configured a jar, it can be induced to make authenticated requests. Constrain one or the other.
 
 ## For agent integrators — the surface that is easy to miss
 

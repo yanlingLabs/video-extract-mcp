@@ -245,6 +245,7 @@ deferred item with its reasoning — check it before "discovering" a known gap.
   `/status` endpoint, and `video-extract status` CLI on top of both
 - `docs/follow-ups.md` — deferred work, with the reasoning that deferred it
 - Env: `VIDEO_EXTRACT_MODELS_DIR`, `VIDEO_EXTRACT_WECHAT_COOKIE`,
+  `VIDEO_EXTRACT_COOKIES_FILE`, `VIDEO_EXTRACT_COOKIES_FROM_BROWSER`,
   `VIDEO_EXTRACT_MAX_CONCURRENCY`, `VIDEO_EXTRACT_TASK_TTL_MS`,
   `VIDEO_EXTRACT_STATUS_PORT` (README has the full table)
 - WeChat resolution was **clean-room derived**; the well-known reference

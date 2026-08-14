@@ -3,6 +3,9 @@ import { join } from 'node:path';
 import type { VideoResolver, ResolveOptions, ResolveResult, ResolveFailure, CaptionTrack, VideoMetadata } from '../types.js';
 import { run } from '../util/run.js';
 import { sweepStalePartials } from '../util/partials.js';
+import {
+  cookieSourceFromEnv, prepareCookies, CookieConfigError, type PreparedCookies,
+} from '../util/cookies.js';
 import { probe } from '../media/ffmpeg.js';
 import { baseLang } from '../transcript/routing.js';
 import { statusCallbacks } from '../status/context.js';
@@ -297,84 +300,107 @@ export class YtDlpResolver implements VideoResolver {
     // Comments can be very slow on popular videos (spec §2.1).
     if (opts.comments) args.push('--write-comments');
 
-    // §4: fires immediately before the one call that actually moves media
-    // bytes -- gated on wantsDownload because --skip-download still reaches
-    // this SAME run() call on the metadata-only path (only an added flag),
-    // so placement alone cannot gate it the way it can in direct.ts/wechat.ts.
-    if (wantsDownload) statusCallbacks()?.onStage?.('downloading');
-    // Clear abandoned partials from a previous run that was killed or
-    // crashed in this same directory before starting a new one. yt-dlp
-    // writes `source.<ext>.part` while downloading and promotes it itself
-    // on success, so anything older than the age gate is orphaned bytes
-    // nothing will ever finish (src/util/partials.ts).
-    if (wantsDownload) sweepStalePartials(opts.workDir);
-    const r = await run('yt-dlp', [...args, url], { timeoutMs: 15 * 60_000 });
-    if (r.code !== 0) {
-      // Deliberately no targeted cleanup here. yt-dlp picks its own
-      // filenames, so two calls into one directory produce the SAME names --
-      // neither an exact path nor a before/after snapshot can tell our
-      // abandoned bytes from a concurrent call's live ones, and an earlier
-      // draft that tried destroyed 2.4MB of a running download. Whatever
-      // this failure left is collected by the age-gated sweep above on a
-      // later call into this directory (src/util/partials.ts).
-      return classifyYtDlpError(r.stderr);
+    // Operator-configured cookies, when present. Read from the environment
+    // only -- never from `opts`, so a caller can neither name a file on this
+    // machine nor point the tool at a live browser profile (src/util/cookies.ts).
+    // A misconfigured credential throws rather than silently fetching
+    // anonymously; classify it as its own failure so the message survives.
+    let cookies: PreparedCookies;
+    try {
+      cookies = prepareCookies(cookieSourceFromEnv());
+    } catch (e) {
+      if (e instanceof CookieConfigError) {
+        return { status: 'extractor_failed', message: e.message, resolvedBy: 'ytdlp' };
+      }
+      throw e;
     }
+    args.push(...cookies.args);
 
-    let meta: YtDlpMeta = {};
-    const lastJson = r.stdout.trim().split('\n').filter((l) => l.startsWith('{')).pop();
-    if (lastJson) { try { meta = JSON.parse(lastJson) as YtDlpMeta; } catch { /* metadata is optional */ } }
+    // try/finally, not a trailing call: every branch below returns, and a
+    // temporary copy of a credential must not outlive the call that made it.
+    try {
 
-    const manual = pickManualCaption(opts.workDir, meta, opts.preferredLanguage);
-    let auto: CaptionTrack | null = null;
-    if (!manual) {
-      // chooseCaptionTier never consults auto when a manual track exists, so
-      // the fetch is only worth its network cost in the manual-less case.
-      const track = pickAutoTrack(meta, opts.preferredLanguage);
-      if (track) auto = await downloadAutoTrack(track, meta.http_headers, opts.workDir);
-    }
+      // §4: fires immediately before the one call that actually moves media
+      // bytes -- gated on wantsDownload because --skip-download still reaches
+      // this SAME run() call on the metadata-only path (only an added flag),
+      // so placement alone cannot gate it the way it can in direct.ts/wechat.ts.
+      if (wantsDownload) statusCallbacks()?.onStage?.('downloading');
+      // Clear abandoned partials from a previous run that was killed or
+      // crashed in this same directory before starting a new one. yt-dlp
+      // writes `source.<ext>.part` while downloading and promotes it itself
+      // on success, so anything older than the age gate is orphaned bytes
+      // nothing will ever finish (src/util/partials.ts).
+      if (wantsDownload) sweepStalePartials(opts.workDir);
+      const r = await run('yt-dlp', [...args, url], { timeoutMs: 15 * 60_000 });
+      if (r.code !== 0) {
+        // Deliberately no targeted cleanup here. yt-dlp picks its own
+        // filenames, so two calls into one directory produce the SAME names --
+        // neither an exact path nor a before/after snapshot can tell our
+        // abandoned bytes from a concurrent call's live ones, and an earlier
+        // draft that tried destroyed 2.4MB of a running download. Whatever
+        // this failure left is collected by the age-gated sweep above on a
+        // later call into this directory (src/util/partials.ts).
+        return classifyYtDlpError(r.stderr);
+      }
 
-    if (!wantsDownload) {
-      // No file was ever fetched, so there is nothing to probe() --
-      // duration comes from the extractor's own metadata instead. Verified
-      // against the installed yt-dlp's youtube extractor
-      // (extractor/youtube/_video.py, _real_extract): duration is scraped
-      // from video_details/microformats DURING EXTRACTION, wholly
-      // independent of the download step, so it is genuine here, not
-      // fabricated. filePath is a placeholder: resolveVideoTool never
-      // dereferences it unless returnVideo is true.
+      let meta: YtDlpMeta = {};
+      const lastJson = r.stdout.trim().split('\n').filter((l) => l.startsWith('{')).pop();
+      if (lastJson) { try { meta = JSON.parse(lastJson) as YtDlpMeta; } catch { /* metadata is optional */ } }
+
+      const manual = pickManualCaption(opts.workDir, meta, opts.preferredLanguage);
+      let auto: CaptionTrack | null = null;
+      if (!manual) {
+        // chooseCaptionTier never consults auto when a manual track exists, so
+        // the fetch is only worth its network cost in the manual-less case.
+        const track = pickAutoTrack(meta, opts.preferredLanguage);
+        if (track) auto = await downloadAutoTrack(track, meta.http_headers, opts.workDir);
+      }
+
+      if (!wantsDownload) {
+        // No file was ever fetched, so there is nothing to probe() --
+        // duration comes from the extractor's own metadata instead. Verified
+        // against the installed yt-dlp's youtube extractor
+        // (extractor/youtube/_video.py, _real_extract): duration is scraped
+        // from video_details/microformats DURING EXTRACTION, wholly
+        // independent of the download step, so it is genuine here, not
+        // fabricated. filePath is a placeholder: resolveVideoTool never
+        // dereferences it unless returnVideo is true.
+        return {
+          status: 'ok', filePath: '', platform: meta.extractor ?? 'unknown',
+          title: meta.title ?? 'video', duration: meta.duration ?? 0, resolvedBy: 'ytdlp',
+          captions: { manual, auto },
+          languageHint: meta.language ?? null,
+          rangeApplied: false,
+          metadata: toVideoMetadata(meta),
+        };
+      }
+
+      const produced = readdirSync(opts.workDir).find((f) => /^source\.(mp4|mkv|webm|m4v)$/.test(f));
+      if (!produced) {
+        return { status: 'extractor_failed', message: 'yt-dlp produced no media file', resolvedBy: 'ytdlp' };
+      }
+      const filePath = join(opts.workDir, produced);
+      const p = await probe(filePath);
+
+      // VERIFY the range actually applied; caller falls back to ffmpeg trim if not.
+      let rangeApplied = false;
+      if (wantsRange) {
+        const expected = opts.end! - opts.start!;
+        rangeApplied = Math.abs(p.duration - expected) <= Math.max(1.5, expected * 0.15);
+      }
+
       return {
-        status: 'ok', filePath: '', platform: meta.extractor ?? 'unknown',
-        title: meta.title ?? 'video', duration: meta.duration ?? 0, resolvedBy: 'ytdlp',
+        status: 'ok', filePath, platform: meta.extractor ?? 'unknown',
+        title: meta.title ?? 'video', duration: p.duration, resolvedBy: 'ytdlp',
         captions: { manual, auto },
         languageHint: meta.language ?? null,
-        rangeApplied: false,
+        rangeApplied,
         metadata: toVideoMetadata(meta),
+        clipStart: wantsRange && rangeApplied ? opts.start : undefined,
+        clipEnd: wantsRange && rangeApplied ? opts.end : undefined,
       };
+    } finally {
+      cookies.dispose();
     }
-
-    const produced = readdirSync(opts.workDir).find((f) => /^source\.(mp4|mkv|webm|m4v)$/.test(f));
-    if (!produced) {
-      return { status: 'extractor_failed', message: 'yt-dlp produced no media file', resolvedBy: 'ytdlp' };
-    }
-    const filePath = join(opts.workDir, produced);
-    const p = await probe(filePath);
-
-    // VERIFY the range actually applied; caller falls back to ffmpeg trim if not.
-    let rangeApplied = false;
-    if (wantsRange) {
-      const expected = opts.end! - opts.start!;
-      rangeApplied = Math.abs(p.duration - expected) <= Math.max(1.5, expected * 0.15);
-    }
-
-    return {
-      status: 'ok', filePath, platform: meta.extractor ?? 'unknown',
-      title: meta.title ?? 'video', duration: p.duration, resolvedBy: 'ytdlp',
-      captions: { manual, auto },
-      languageHint: meta.language ?? null,
-      rangeApplied,
-      metadata: toVideoMetadata(meta),
-      clipStart: wantsRange && rangeApplied ? opts.start : undefined,
-      clipEnd: wantsRange && rangeApplied ? opts.end : undefined,
-    };
   }
 }

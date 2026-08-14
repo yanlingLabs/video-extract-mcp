@@ -101,10 +101,32 @@ npm run preflight            # verifies ffmpeg / ffprobe / yt-dlp / tesseract
 | Variable | Purpose |
 |---|---|
 | `VIDEO_EXTRACT_MODELS_DIR` | Where speech models live. Defaults to `./models` when that exists, else `~/.cache/video-extract-mcp/models`. |
-| `VIDEO_EXTRACT_WECHAT_COOKIE` | A yuanbao session cookie, required only for WeChat Channels links. |
+| `VIDEO_EXTRACT_COOKIES_FILE` | Path to a Netscape-format cookie jar, used for **every** yt-dlp source at once — YouTube, Instagram, Facebook, X, TikTok, Twitch and the rest. See [Authenticated sources](#authenticated-sources). |
+| `VIDEO_EXTRACT_COOKIES_FROM_BROWSER` | Load cookies from a local browser instead: `chrome`, `firefox`, `safari`, `edge`, `brave`, `chromium`, `opera`, `vivaldi`, `whale`, optionally `browser:profile`. Ignored when `VIDEO_EXTRACT_COOKIES_FILE` is set. |
+| `VIDEO_EXTRACT_WECHAT_COOKIE` | A yuanbao session cookie, required only for WeChat Channels links. Separate from the above by design — a different protocol with its own credential. |
 | `VIDEO_EXTRACT_MAX_CONCURRENCY` | Caps concurrent `analyze_video` item executions — plain calls and background tasks, batch items and separate calls, all count against the same limit. Default `4`. `resolve_video` is exempt: it loads no models, so there is nothing to throttle. |
 | `VIDEO_EXTRACT_TASK_TTL_MS` | How long a completed background-task handle stays queryable before it expires. Default `1800000` (30 minutes). `0` (or any non-positive value) means the handle never expires. Governs the in-memory handle only — files already written to `destinationPath` are never deleted by the tool, expired handle or not. |
 | `VIDEO_EXTRACT_STATUS_PORT` | Pins the port of the localhost `/status` endpoint (see [Watching progress](#watching-progress)). Unset picks an ephemeral port each start (default: endpoint on). The literal value `0` disables the endpoint entirely — note the contrast with `VIDEO_EXTRACT_TASK_TTL_MS` above, where `0` means *no expiry*, not disabled. |
+
+### Authenticated sources
+
+Plenty of media is not public, and the answer is the same one the platforms themselves ask for: cookies. **One jar covers every yt-dlp source at once** — cookies are scoped by domain inside the file, so a single export authenticates YouTube, Instagram, Facebook, X, TikTok and Twitch together. It is not a YouTube-only setting.
+
+```bash
+export VIDEO_EXTRACT_COOKIES_FILE=~/cookies.txt      # a Netscape-format jar
+# or, to read a local browser directly:
+export VIDEO_EXTRACT_COOKIES_FROM_BROWSER=firefox    # chrome, safari, edge, brave, ...
+```
+
+What it unlocks, beyond simply logging in: age-restricted and members-only YouTube, most of Instagram and Facebook, much of X, subscriber-only Twitch — and **`rate_limited` / "sign in to confirm you're not a bot"**, which an anonymous fetch hits far sooner than a signed-in one.
+
+Three things worth knowing before you use it:
+
+- **It is read from the environment only.** A caller can never name a cookie file or a browser per-request. An agent that could do either could read any file on the machine, or lift a live session — so that stays the operator's decision, not the agent's.
+- **Your jar is never modified.** `--cookies FILE` doesn't only read that file, it rewrites it on exit; the tool copies your jar to a private temp file, hands yt-dlp the copy, and deletes it afterwards. The cost is that refreshed cookies aren't written back.
+- **Exporting from a browser you are actively logged into can log you out.** Platforms rotate session cookies, and a copy taken from a live session goes stale — YouTube is especially prone to it. yt-dlp's own advice: export from a private/incognito window, then close that window *without* logging out.
+
+A wrong path fails loudly rather than quietly fetching anonymously — an unreadable jar is a broken setup, not something to degrade past, and silently anonymous results would send you hunting the wrong bug.
 
 ## Three ways to use it
 
