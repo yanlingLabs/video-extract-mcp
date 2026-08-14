@@ -54,6 +54,68 @@ describe('classifyYtDlpError', () => {
   it('defaults to extractor_failed', () => {
     expect(classifyYtDlpError('ERROR: some new breakage').status).toBe('extractor_failed');
   });
+
+  // Every stderr below is a REAL string this tool produced against YouTube,
+  // not an invented one -- the whole point of this group is that the previous
+  // classification handed an agent "ffmpeg exited with code 8" and expected it
+  // to know what to do.
+  describe('a platform that refuses the media transfer', () => {
+    it('reports rate_limited, not extractor_failed, for a plain 403', () => {
+      // Observed verbatim from resolve_video with returnVideo: true.
+      const f = classifyYtDlpError('ERROR: unable to download video data: HTTP Error 403: Forbidden');
+      expect(f.status).toBe('rate_limited');
+      // The status is the machine-readable half; the message must carry the
+      // one fact that makes it actionable.
+      expect(f.message).toMatch(/temporar/i);
+      expect(f.message).toMatch(/retry/i);
+    });
+
+    it('finds the 403 even when ffmpeg\'s exit code is all that reaches the tail', () => {
+      // The ranged case, and the reason this matches the WHOLE stderr rather
+      // than the last 300 characters it reports as its message: with
+      // --download-sections the fetch is ffmpeg's, so yt-dlp's closing line is
+      // the exit code and the informative line sits far above it. Padded past
+      // 300 chars deliberately -- a tail-only match classifies this as a
+      // generic failure and this assertion is what catches that.
+      const stderr = [
+        '[youtube] SHhWCS5AKzw: Downloading webpage',
+        '[info] SHhWCS5AKzw: Downloading 1 format(s): 396+251',
+        '[download] Destination: source.f396.mp4',
+        "Server returned 403 Forbidden (access denied)",
+        ...Array.from({ length: 12 }, (_, i) => `[download] retry ${i} of 10 padding padding padding padding`),
+        'ERROR: ffmpeg exited with code 8',
+      ].join('\n');
+      expect(stderr.slice(-300)).not.toMatch(/403/);   // the tail really is uninformative
+      expect(classifyYtDlpError(stderr).status).toBe('rate_limited');
+    });
+
+    it('maps 429 and too-many-requests the same way', () => {
+      expect(classifyYtDlpError('ERROR: HTTP Error 429: Too Many Requests').status).toBe('rate_limited');
+      expect(classifyYtDlpError('ERROR: Too Many Requests, slow down').status).toBe('rate_limited');
+    });
+
+    it('still prefers auth_required when the platform asks for sign-in', () => {
+      // YouTube's bot check is throttling too, but cookies genuinely fix it,
+      // so it must keep the status whose message says so. Pins the ordering:
+      // moving the rate-limit branch above the auth one fails this.
+      const f = classifyYtDlpError(
+        "ERROR: Sign in to confirm you're not a bot. Use --cookies-from-browser. HTTP Error 403: Forbidden",
+      );
+      expect(f.status).toBe('auth_required');
+    });
+
+    it('does NOT claim rate limiting for an ffmpeg failure with no 403 anywhere', () => {
+      // The honesty boundary. Without a 403/429 in stderr there is no evidence
+      // it was throttling, so the status stays extractor_failed -- but the
+      // message must still beat a bare exit code, and must keep the raw text.
+      const f = classifyYtDlpError('ERROR: ffmpeg exited with code 8');
+      expect(f.status).toBe('extractor_failed');
+      expect(f.status).not.toBe('rate_limited');
+      expect(f.message).toContain('exit 8');
+      expect(f.message).toMatch(/ranged|range/i);
+      expect(f.message).toContain('ffmpeg exited with code 8');   // raw text preserved
+    });
+  });
 });
 
 describe('pickResolver dispatch order (spec §6)', () => {

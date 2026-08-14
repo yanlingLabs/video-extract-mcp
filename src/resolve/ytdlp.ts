@@ -21,6 +21,55 @@ export function classifyYtDlpError(stderr: string): ResolveFailure {
   if (/unsupported url|no video formats|no suitable extractor/.test(s)) {
     return { status: 'unsupported', reason: 'extractor_unsupported', message: 'No extractor for this URL', resolvedBy: 'ytdlp' };
   }
+  // The platform served metadata but refused the media transfer. Deliberately
+  // its own status rather than extractor_failed, because the right response is
+  // the opposite one: extractor_failed reads terminal ("this video cannot be
+  // had"), while this is nearly always temporary and clears on its own.
+  //
+  // Observed for real: six calls in ~20 seconds against one video, and
+  // YouTube began refusing media URLs while extraction kept working. Verified
+  // it was throttling rather than anything durable -- freshly-obtained URLs
+  // for the very formats that had just 403'd served 206 immediately after, so
+  // this is NOT format-specific (an earlier note in docs/follow-ups.md
+  // guessed AV1 was the culprit; that guess is now corrected there).
+  //
+  // Ordered AFTER the auth check on purpose: "Sign in to confirm you're not a
+  // bot" is bot-detection too, but cookies genuinely resolve it, so it stays
+  // auth_required where the message can say so. A bare 403 has no such remedy.
+  //
+  // Matched against the WHOLE stderr, not the tail this function returns as
+  // its message: with --download-sections the fetch is ffmpeg's, so yt-dlp's
+  // own summary line is "ffmpeg exited with code 8" and the informative
+  // "Server returned 403 Forbidden" sits further up, outside the last 300
+  // characters. Keying on the tail alone would classify the ranged case as a
+  // generic failure while the plain case classified correctly.
+  if (/http error 403|403: forbidden|403 forbidden|http error 429|429: too many requests|too many requests|rate.?limit/.test(s)) {
+    return {
+      status: 'rate_limited',
+      message: 'The platform served metadata but refused to hand over the media '
+        + '(HTTP 403/429). This is usually temporary rate limiting rather than a '
+        + 'permanent failure: the same request often succeeds a few minutes later. '
+        + 'Retry after a pause, space out repeated requests for the same video, or '
+        + 'reuse an already-downloaded file instead of fetching it again.',
+      resolvedBy: 'ytdlp',
+    };
+  }
+  // A raw "ffmpeg exited with code N" tells a caller nothing it can act on.
+  // Deliberately NOT reported as rate_limited: without a 403/429 anywhere in
+  // stderr there is no evidence it was throttling, and claiming otherwise
+  // would be a fabricated diagnosis. The message says what is known and what
+  // is merely common, and keeps the raw text for a human.
+  const ff = /ffmpeg exited with code (\d+)/.exec(s);
+  if (ff) {
+    return {
+      status: 'extractor_failed',
+      message: `ffmpeg could not fetch or mux the media (exit ${ff[1]}). On a ranged `
+        + 'request ffmpeg performs the download itself, so this most often means the '
+        + 'platform refused that fetch -- retrying, or asking for the whole video '
+        + `instead of a range, is usually what clears it. Raw: ${stderr.slice(-200).trim()}`,
+      resolvedBy: 'ytdlp',
+    };
+  }
   return { status: 'extractor_failed', message: stderr.slice(-300).trim() || 'yt-dlp failed', resolvedBy: 'ytdlp' };
 }
 

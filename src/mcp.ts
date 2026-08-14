@@ -118,7 +118,10 @@ const ANALYZE_DESCRIPTION =
   + 'frames are chosen per item; for a single exact frame, set start and end to the same '
   + 'second with frames: "even", maxFrames: 1 and transcript: false. On failure an item '
   + 'returns a status that is not "ok" with a readable reason, rather than throwing -- '
-  + "always check each item's status first, and check its warnings: any optional stage "
+  + 'always check each item\'s status first. One status is worth special-casing: '
+  + '"rate_limited" means the platform served metadata but refused the media, which is '
+  + 'nearly always temporary -- pause and retry rather than treating it as a permanent '
+  + 'failure, and space out repeated requests for the same video. Also check its warnings: any optional stage '
   + 'that failed and was skipped past records an entry there, so an empty transcript can '
   + 'be told apart from a video that simply has no speech. Called as a background task, '
   + 'this returns a handle immediately; progress arrives as status messages like '

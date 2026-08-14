@@ -1,6 +1,6 @@
 export type ResolveStatus =
   | 'ok' | 'auth_required' | 'auth_expired' | 'needs_interaction'
-  | 'unsupported' | 'not_found' | 'extractor_failed';
+  | 'unsupported' | 'not_found' | 'rate_limited' | 'extractor_failed';
 
 export type UnsupportedReason = 'drm_protected' | 'unsupported_link' | 'extractor_unsupported';
 
