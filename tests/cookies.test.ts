@@ -5,7 +5,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import {
-  cookieSourceFromEnv, prepareCookies, CookieConfigError,
+  cookieSourceFromEnv, prepareCookies, detectBrowser, retryBrowserFor, CookieConfigError,
 } from '../src/util/cookies.js';
 import { YtDlpResolver } from '../src/resolve/ytdlp.js';
 
@@ -213,5 +213,160 @@ describe('the resolver actually passes cookies to yt-dlp', () => {
     stubEnv(jar);
     await new YtDlpResolver().resolve('https://example.invalid/v', { workDir: f.workDir, returnVideo: false });
     expect(readFileSync(f.log, 'utf8')).not.toContain('secret-value');
+  }, 30_000);
+});
+
+// ---------------------------------------------------------------------------
+// auto: lazy borrowing, and the suggestion when nothing is configured.
+// ---------------------------------------------------------------------------
+
+describe('detectBrowser', () => {
+  const exists = (present: string[]) => (p: string) => present.some((s) => p.endsWith(s));
+
+  it('prefers firefox, whose store needs no keychain approval', () => {
+    // Ordering is the whole value: every Chrome-family browser prompts on
+    // first read, firefox does not. Picking chrome when firefox is available
+    // means an OS dialog nobody expected.
+    const got = detectBrowser('/home/u', 'linux',
+      exists(['.mozilla/firefox', '.config/google-chrome']));
+    expect(got).toBe('firefox');
+  });
+
+  it('falls through to whatever IS present', () => {
+    expect(detectBrowser('/home/u', 'linux', exists(['.config/BraveSoftware/Brave-Browser']))).toBe('brave');
+    expect(detectBrowser('/Users/u', 'darwin', exists(['Library/Application Support/Google/Chrome']))).toBe('chrome');
+  });
+
+  it('returns null when no supported browser has ever run', () => {
+    expect(detectBrowser('/home/u', 'linux', () => false)).toBeNull();
+  });
+
+  it('detects on the DATA directory, not the installed app', () => {
+    // A browser installed but never launched has no cookie store; choosing it
+    // turns "retry with cookies" into a confusing yt-dlp error.
+    expect(detectBrowser('/Users/u', 'darwin', exists(['/Applications/Google Chrome.app']))).toBeNull();
+  });
+
+  it('returns null rather than guessing when HOME is unset', () => {
+    expect(detectBrowser('', 'linux', () => true)).toBeNull();
+  });
+});
+
+describe('cookieSourceFromEnv: auto', () => {
+  it('recognises auto, case-insensitively, as its own mode', () => {
+    expect(cookieSourceFromEnv({ VIDEO_EXTRACT_COOKIES_FROM_BROWSER: 'auto' })).toEqual({ kind: 'auto' });
+    expect(cookieSourceFromEnv({ VIDEO_EXTRACT_COOKIES_FROM_BROWSER: 'AUTO' })).toEqual({ kind: 'auto' });
+  });
+
+  it('contributes NO arguments to a normal request', () => {
+    // The point of lazy: an ordinary public video costs no keychain prompt
+    // and no borrowed session.
+    expect(prepareCookies({ kind: 'auto' }).args).toEqual([]);
+  });
+
+  it('is the only source that offers a retry browser', () => {
+    // An eagerly-configured source already sent its cookies on the attempt
+    // that just failed; retrying with the same credentials repeats it.
+    expect(retryBrowserFor({ kind: 'browser', spec: 'chrome' })).toBeNull();
+    expect(retryBrowserFor({ kind: 'file', path: '/x' })).toBeNull();
+    expect(retryBrowserFor({ kind: 'none' })).toBeNull();
+  });
+});
+
+describe('the lazy retry', () => {
+  /** Fake yt-dlp that fails with a 403 unless --cookies-from-browser is present. */
+  function refusingUnlessCookies(): { binDir: string; log: string; workDir: string } {
+    const binDir = mkdtempSync(join(tmpdir(), 'vem-lazybin-'));
+    const workDir = mkdtempSync(join(tmpdir(), 'vem-lazywork-'));
+    const log = join(binDir, 'argv.log');
+    const bin = join(binDir, 'yt-dlp');
+    writeFileSync(bin, [
+      '#!/bin/sh',
+      `echo "$@" >> "${log}"`,
+      'case " $* " in',
+      '  *" --cookies-from-browser "*)',
+      `    echo '{"title":"t","duration":5,"extractor":"youtube"}'; exit 0 ;;`,
+      '  *)',
+      '    echo "ERROR: unable to download video data: HTTP Error 403: Forbidden" >&2; exit 1 ;;',
+      'esac',
+    ].join('\n'));
+    chmodSync(bin, 0o755);
+    prevPath = process.env['PATH'];
+    process.env['PATH'] = `${binDir}:${prevPath ?? ''}`;
+    return { binDir, log, workDir };
+  }
+
+  it('retries once with browser cookies after a refusal, and succeeds', async () => {
+    const f = refusingUnlessCookies();
+    stubEnv(undefined, 'auto');
+    const r = await new YtDlpResolver().resolve('https://example.invalid/v', { workDir: f.workDir, returnVideo: false });
+
+    const calls = readFileSync(f.log, 'utf8').trim().split('\n');
+    expect(calls.length).toBe(2);
+    expect(calls[0]).not.toContain('--cookies-from-browser');   // first attempt is anonymous
+    expect(calls[1]).toContain('--cookies-from-browser');       // second borrows
+    expect(r.status).toBe('ok');
+  }, 30_000);
+
+  it('does NOT retry when a browser was already named, since it would repeat', async () => {
+    const f = refusingUnlessCookies();
+    stubEnv(undefined, 'chrome');
+    await new YtDlpResolver().resolve('https://example.invalid/v', { workDir: f.workDir, returnVideo: false });
+    // Exactly one call: it already carried cookies.
+    expect(readFileSync(f.log, 'utf8').trim().split('\n').length).toBe(1);
+  }, 30_000);
+
+  it('never borrows for a failure cookies cannot fix', async () => {
+    // DRM is not about who is asking. Spending a keychain prompt on it would
+    // be pure cost.
+    const binDir = mkdtempSync(join(tmpdir(), 'vem-drmbin-'));
+    const workDir = mkdtempSync(join(tmpdir(), 'vem-drmwork-'));
+    const log = join(binDir, 'argv.log');
+    writeFileSync(join(binDir, 'yt-dlp'),
+      `#!/bin/sh\necho "$@" >> "${log}"\necho "ERROR: This video is DRM protected" >&2\nexit 1\n`);
+    chmodSync(join(binDir, 'yt-dlp'), 0o755);
+    prevPath = process.env['PATH'];
+    process.env['PATH'] = `${binDir}:${prevPath ?? ''}`;
+    stubEnv(undefined, 'auto');
+
+    const r = await new YtDlpResolver().resolve('https://example.invalid/v', { workDir, returnVideo: false });
+    expect(readFileSync(log, 'utf8').trim().split('\n').length).toBe(1);
+    expect(r.status).toBe('unsupported');
+  }, 30_000);
+});
+
+describe('the suggestion when nothing is configured', () => {
+  it('offers a command on a refusal, and says a keychain prompt may appear', async () => {
+    const binDir = mkdtempSync(join(tmpdir(), 'vem-sugbin-'));
+    const workDir = mkdtempSync(join(tmpdir(), 'vem-sugwork-'));
+    writeFileSync(join(binDir, 'yt-dlp'),
+      '#!/bin/sh\necho "ERROR: unable to download video data: HTTP Error 403: Forbidden" >&2\nexit 1\n');
+    chmodSync(join(binDir, 'yt-dlp'), 0o755);
+    prevPath = process.env['PATH'];
+    process.env['PATH'] = `${binDir}:${prevPath ?? ''}`;
+    stubEnv();
+
+    const r = await new YtDlpResolver().resolve('https://example.invalid/v', { workDir, returnVideo: false });
+    const f = r as { status: string; message: string; suggestedCommand?: string };
+    expect(f.status).toBe('rate_limited');
+    expect(f.suggestedCommand).toContain('VIDEO_EXTRACT_COOKIES_FROM_BROWSER=auto');
+    // The surprising part must be stated BEFORE it happens.
+    expect(f.message).toMatch(/keychain/i);
+    // And the command must reach the message too -- the analyze path carries
+    // only a reason string, so a structured field alone would not reach it.
+    expect(f.message).toContain(f.suggestedCommand!);
+  }, 30_000);
+
+  it('offers nothing for a failure cookies cannot fix', async () => {
+    const binDir = mkdtempSync(join(tmpdir(), 'vem-nosugbin-'));
+    const workDir = mkdtempSync(join(tmpdir(), 'vem-nosugwork-'));
+    writeFileSync(join(binDir, 'yt-dlp'), '#!/bin/sh\necho "ERROR: Video unavailable" >&2\nexit 1\n');
+    chmodSync(join(binDir, 'yt-dlp'), 0o755);
+    prevPath = process.env['PATH'];
+    process.env['PATH'] = `${binDir}:${prevPath ?? ''}`;
+    stubEnv();
+
+    const r = await new YtDlpResolver().resolve('https://example.invalid/v', { workDir, returnVideo: false });
+    expect((r as { suggestedCommand?: string }).suggestedCommand).toBeUndefined();
   }, 30_000);
 });

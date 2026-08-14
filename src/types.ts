@@ -75,6 +75,14 @@ export interface ResolveFailure {
   reason?: UnsupportedReason | string;
   message: string;
   resolvedBy?: string;
+  /**
+   * A command the caller may run, WITH THE USER'S APPROVAL, to make this
+   * class of failure stop happening -- currently only offered for a refusal
+   * that cookies would likely fix, and only when nothing is configured yet.
+   * A suggestion, never something the server does on its own: acting on it
+   * means reading the user's browser credentials, which is theirs to allow.
+   */
+  suggestedCommand?: string;
 }
 
 export type ResolveResult = ResolvedMedia | ResolveFailure;

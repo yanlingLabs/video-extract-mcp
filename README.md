@@ -113,10 +113,19 @@ npm run preflight            # verifies ffmpeg / ffprobe / yt-dlp / tesseract
 Plenty of media is not public, and the answer is the same one the platforms themselves ask for: cookies. **One jar covers every yt-dlp source at once** — cookies are scoped by domain inside the file, so a single export authenticates YouTube, Instagram, Facebook, X, TikTok and Twitch together. It is not a YouTube-only setting.
 
 ```bash
-export VIDEO_EXTRACT_COOKIES_FILE=~/cookies.txt      # a Netscape-format jar
-# or, to read a local browser directly:
-export VIDEO_EXTRACT_COOKIES_FROM_BROWSER=firefox    # chrome, safari, edge, brave, ...
+export VIDEO_EXTRACT_COOKIES_FROM_BROWSER=auto       # recommended: borrow only when blocked
 ```
+
+**`auto` is lazy, and that is the point.** Ordinary requests send no cookies at all. Only when a platform actually refuses one does the server detect an installed browser, retry that single request with its cookies, and stop — no loop. You pay the cost of touching a credential store only when something is genuinely blocked, which is also what keeps a borrowed session from being rotated out from under you on every public video.
+
+The other two modes are eager — cookies on every request:
+
+```bash
+export VIDEO_EXTRACT_COOKIES_FROM_BROWSER=firefox    # chrome, safari, edge, brave, ...
+export VIDEO_EXTRACT_COOKIES_FILE=~/cookies.txt      # a Netscape-format jar
+```
+
+**Expect an OS keychain prompt.** Every Chrome-family browser encrypts its cookie store against the system keyring, so the first read shows a dialog you must approve — on macOS, "Chrome Safe Storage". Firefox does not; its store is plain SQLite, which is why `auto` prefers it when both are present. If you set nothing at all and a request is refused, the reply tells you the command to enable this and warns about that prompt, rather than leaving you to discover it.
 
 What it unlocks, beyond simply logging in: age-restricted and members-only YouTube, most of Instagram and Facebook, much of X, subscriber-only Twitch — and **`rate_limited` / "sign in to confirm you're not a bot"**, which an anonymous fetch hits far sooner than a signed-in one.
 

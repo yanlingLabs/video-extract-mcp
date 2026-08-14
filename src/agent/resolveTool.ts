@@ -36,6 +36,9 @@ export interface ResolveItemResult {
   descriptionPreview?: string | null;
   commentCount?: number | null;
   metadataPath: string;
+  /** Present only on a failure cookies would plausibly fix, with none configured.
+   *  Run it only with the user's approval: it grants access to their browser session. */
+  suggestedCommand?: string;
   videoPath?: string;
   clipStart?: number;
   clipEnd?: number;
@@ -77,7 +80,10 @@ async function resolveOneVideoAttempt(item: ResolveVideoItem, destinationPath: s
     // The brief's reference always used r.message, silently discarding a
     // populated r.reason.
     const reason = typeof r.reason === 'string' ? r.reason : r.message;
-    return { status: r.status, reason, metadataPath };
+    return {
+      status: r.status, reason, metadataPath,
+      ...(r.suggestedCommand ? { suggestedCommand: r.suggestedCommand } : {}),
+    };
   }
 
   // Range extraction is genuine for yt-dlp sources but is a documented

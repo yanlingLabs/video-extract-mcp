@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { cookieSourceFromEnv, CookieConfigError, type CookieSource } from './cookies.js';
+import { cookieSourceFromEnv, detectBrowser, CookieConfigError, type CookieSource } from './cookies.js';
 
 /**
  * `video-extract cookies` -- answers "is my cookie setup actually working?"
@@ -123,6 +123,26 @@ export function runCookiesCli(
     out('  VIDEO_EXTRACT_COOKIES_FROM_BROWSER to a browser name (chrome, firefox, safari, ...).');
     out('  Public media does not need either.');
     return 0;
+  }
+
+  if (source.kind === 'auto') {
+    const browser = detectBrowser();
+    if (json) { out(JSON.stringify({ configured: true, kind: 'auto', detected: browser }, null, 2)); return browser ? 0 : 1; }
+    out('cookie source: auto');
+    if (browser) {
+      out(`  detected browser: ${browser}`);
+      out('  Cookies are borrowed ONLY after a request is refused, then that request is retried once.');
+      out('  Ordinary requests send no cookies at all.');
+      if (browser !== 'firefox' && browser !== 'safari') {
+        // The surprising part, worth saying before it happens rather than
+        // after: an unexplained Keychain dialog reads as something malicious.
+        out('  The first such retry will show an OS keychain prompt, which must be approved.');
+      }
+      return 0;
+    }
+    out('  NO SUPPORTED BROWSER FOUND. Nothing to borrow cookies from, so refusals will not be retried.');
+    out('  Point VIDEO_EXTRACT_COOKIES_FILE at an exported jar instead.');
+    return 1;
   }
 
   if (source.kind === 'browser') {

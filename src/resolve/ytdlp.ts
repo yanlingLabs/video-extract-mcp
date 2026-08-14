@@ -4,7 +4,8 @@ import type { VideoResolver, ResolveOptions, ResolveResult, ResolveFailure, Capt
 import { run } from '../util/run.js';
 import { sweepStalePartials } from '../util/partials.js';
 import {
-  cookieSourceFromEnv, prepareCookies, CookieConfigError, type PreparedCookies,
+  cookieSourceFromEnv, prepareCookies, retryBrowserFor, cookieSuggestion,
+  CookieConfigError, type PreparedCookies, type CookieSource,
 } from '../util/cookies.js';
 import { probe } from '../media/ffmpeg.js';
 import { baseLang } from '../transcript/routing.js';
@@ -306,8 +307,10 @@ export class YtDlpResolver implements VideoResolver {
     // A misconfigured credential throws rather than silently fetching
     // anonymously; classify it as its own failure so the message survives.
     let cookies: PreparedCookies;
+    let cookieSource: CookieSource;
     try {
-      cookies = prepareCookies(cookieSourceFromEnv());
+      cookieSource = cookieSourceFromEnv();
+      cookies = prepareCookies(cookieSource);
     } catch (e) {
       if (e instanceof CookieConfigError) {
         return { status: 'extractor_failed', message: e.message, resolvedBy: 'ytdlp' };
@@ -331,18 +334,52 @@ export class YtDlpResolver implements VideoResolver {
       // on success, so anything older than the age gate is orphaned bytes
       // nothing will ever finish (src/util/partials.ts).
       if (wantsDownload) sweepStalePartials(opts.workDir);
-      const r = await run('yt-dlp', [...args, url], { timeoutMs: 15 * 60_000 });
+      let r = await run('yt-dlp', [...args, url], { timeoutMs: 15 * 60_000 });
       if (r.code !== 0) {
-        // Deliberately no targeted cleanup here. yt-dlp picks its own
-        // filenames, so two calls into one directory produce the SAME names --
-        // neither an exact path nor a before/after snapshot can tell our
-        // abandoned bytes from a concurrent call's live ones, and an earlier
-        // draft that tried destroyed 2.4MB of a running download. Whatever
-        // this failure left is collected by the age-gated sweep above on a
-        // later call into this directory (src/util/partials.ts).
-        return classifyYtDlpError(r.stderr);
+        // A refusal is the one failure cookies can plausibly fix, so it is
+        // the only one worth spending them on. Everything else (DRM, removed
+        // video, no extractor) is unaffected by who is asking.
+        // Deliberately no targeted cleanup on any failure path below. yt-dlp
+        // picks its own filenames, so two calls into one directory produce the
+        // SAME names -- neither an exact path nor a before/after snapshot can
+        // tell our abandoned bytes from a concurrent call's live ones, and an
+        // earlier draft that tried destroyed 2.4MB of a running download.
+        // Whatever a failure leaves is collected by the age-gated sweep above
+        // on a later call into this directory (src/util/partials.ts).
+        const first = classifyYtDlpError(r.stderr);
+        const fixable = first.status === 'rate_limited' || first.status === 'auth_required';
+        // Only 'auto' returns a browser here: an eagerly-configured source
+        // already sent its cookies on the attempt that just failed, so
+        // retrying with the same credentials would repeat the same refusal.
+        const browser = fixable ? retryBrowserFor(cookieSource) : null;
+        if (browser) {
+          // ONE retry, never a loop: if borrowed cookies do not clear it, the
+          // refusal is about rate rather than identity and hammering it is
+          // exactly what provoked the limiter in the first place.
+          r = await run('yt-dlp', [...args, '--cookies-from-browser', browser, url], { timeoutMs: 15 * 60_000 });
+        }
+        if (r.code !== 0) {
+          const failure = browser ? classifyYtDlpError(r.stderr) : first;
+          // Nothing configured, and cookies would plausibly have helped: hand
+          // back the command that would enable them. A suggestion only -- the
+          // server never reaches for a credential nobody offered.
+          if (fixable && !browser && cookieSource.kind === 'none') {
+            const s = cookieSuggestion();
+            // The command goes in the MESSAGE as well as the field: the analyze
+            // path carries only a reason string into its manifest, so a
+            // structured field alone would reach resolve_video's caller and
+            // silently not analyze_video's.
+            if (s) {
+              return {
+                ...failure,
+                message: `${failure.message} ${s.message} Command: ${s.command}`,
+                suggestedCommand: s.command,
+              };
+            }
+          }
+          return failure;
+        }
       }
-
       let meta: YtDlpMeta = {};
       const lastJson = r.stdout.trim().split('\n').filter((l) => l.startsWith('{')).pop();
       if (lastJson) { try { meta = JSON.parse(lastJson) as YtDlpMeta; } catch { /* metadata is optional */ } }
