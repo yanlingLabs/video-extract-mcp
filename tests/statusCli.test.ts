@@ -11,7 +11,8 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { getEventListeners } from 'node:events';
 import { createStatusRegistry, type StatusRegistry } from '../src/status/registry.js';
 import { startStatusEndpoint, type StatusEndpoint } from '../src/status/endpoint.js';
 import { registerServer } from '../src/status/discovery.js';
@@ -154,6 +155,55 @@ describe('video-extract status CLI', () => {
     expect(joined).not.toContain('https://other/that');
   });
 
+  it('merges items from TWO distinct live servers into one view (the central promise of the discovery file)', async () => {
+    // Coverage gap flagged by review: every other test here calls
+    // setupLiveServer() at most once, always keyed to process.pid, so
+    // nothing shipped actually proved the "merge every live server" half
+    // of the CLI's own job. Two genuinely distinct discovery entries are
+    // needed -- registerServer() replaces by pid, so two entries under the
+    // SAME pid would just collapse into one. process.pid (this test
+    // process itself) and process.ppid (its parent -- the process that
+    // launched this vitest worker, alive for the whole run) are two real,
+    // live, DISTINCT pids with no extra process to spawn: liveServers()
+    // only ever checks kill(pid,0) against the registered pid, and never
+    // cross-validates that the pid is what actually bound the registered
+    // port, so a real second port (a real second in-process endpoint) is
+    // all that's additionally needed.
+    freshCacheDir();
+
+    const regA = createStatusRegistry();
+    regA.register({ url: 'https://serverA/one', tool: 'analyze', destinationPath: mkdtempSync(join(tmpdir(), 'vem-cli-multi-a-')) });
+    const epA = startStatusEndpoint(
+      regA, { pid: process.pid, version: '0.3.0', startedAt: Date.now(), concurrency: () => ({ cap: 4, running: 0, queued: 0 }) }, 0,
+    );
+    const urlA = await epA.url;
+    registerServer({ pid: process.pid, port: Number(new URL(urlA!).port), startedAt: Date.now(), version: '0.3.0' });
+    open.push(epA);
+
+    const regB = createStatusRegistry();
+    regB.register({ url: 'https://serverB/two', tool: 'analyze', destinationPath: mkdtempSync(join(tmpdir(), 'vem-cli-multi-b-')) });
+    const epB = startStatusEndpoint(
+      regB, { pid: process.ppid, version: '0.3.0', startedAt: Date.now(), concurrency: () => ({ cap: 4, running: 0, queued: 0 }) }, 0,
+    );
+    const urlB = await epB.url;
+    registerServer({ pid: process.ppid, port: Number(new URL(urlB!).port), startedAt: Date.now(), version: '0.3.0' });
+    open.push(epB);
+
+    const lines: string[] = [];
+    const code = await runStatusCli([], (l) => lines.push(l));
+
+    expect(code).toBe(0);
+    const joined = lines.join('\n');
+    expect(joined).toContain('https://serverA/one');
+    expect(joined).toContain('https://serverB/two');
+    // Two live servers -> two footer lines, one per pid (trailing space
+    // avoids a numeric-prefix collision, e.g. pid 5 matching inside "pid 58").
+    const footers = lines.filter((l) => l.startsWith('server pid'));
+    expect(footers).toHaveLength(2);
+    expect(footers.some((f) => f.includes(`server pid ${process.pid} `))).toBe(true);
+    expect(footers.some((f) => f.includes(`server pid ${process.ppid} `))).toBe(true);
+  });
+
   it('a dead server entry is pruned; with nothing left live, prints the exact no-servers line and exits 0', async () => {
     freshCacheDir();
     // Brief's own recipe (mirrors tests/statusDiscovery.test.ts): spawn a
@@ -228,4 +278,120 @@ describe('video-extract status CLI', () => {
     expect(code).toBe(0);
     expect(lines.some((l) => l.includes('https://x/watch'))).toBe(true);
   });
+
+  it('the watch loop does not accumulate abort-listeners across ticks (fix round 1: the timer\'s NORMAL-resolution path must remove its own listener too)', async () => {
+    // Fix round 1 (coordinator review, Important): `{ once: true }` only
+    // self-removes a listener that actually FIRES. Every real watch tick
+    // resolves via the timer's NORMAL path (nothing aborts in production
+    // usage -- Ctrl-C terminates the process directly, it never touches
+    // this AbortSignal), so a version that only cleans up on the abort
+    // path leaks one listener per tick, unboundedly, for as long as the
+    // process runs (reviewer's own reproduction: 6 listeners after 6
+    // seconds). Directly inspectable via node:events' getEventListeners()
+    // on the SAME AbortSignal this test hands to runStatusCli --
+    // abortableSleep() is module-private, but it operates on exactly this
+    // externally-owned signal, so no export is needed to observe its
+    // listener hygiene from outside.
+    //
+    // The correct steady-state while the loop is actively running is
+    // exactly ONE listener, not zero: at any instant there is either
+    // exactly one CURRENTLY-PENDING sleep with its own listener attached,
+    // or (briefly, between a tick's own render finishing and its next
+    // abortableSleep() call being made) zero -- confirmed empirically
+    // before writing this assertion, including that a single FIXED sample
+    // time can land inside that brief render-gap and misleadingly read 0
+    // even under correct code, which is why this polls densely across
+    // several ticks and tracks the MAXIMUM observed count instead of one
+    // fixed-time snapshot. (Also confirmed: sampling immediately AFTER an
+    // abort always reads 0 under BOTH the buggy and the fixed code,
+    // because the single 'abort' event invokes -- and so self-removes, via
+    // each one's own {once:true} -- every listener still attached at that
+    // instant, stale or not; that makes "after abort" structurally unable
+    // to distinguish the two, which is why this samples WHILE the loop is
+    // still running instead of after stopping it.) What must never happen
+    // is the max climbing past 1 -- 1 (fixed, every tick) vs 1, 2, 3...
+    // (buggy, one more surviving per elapsed tick).
+    freshCacheDir();
+    const reg = createStatusRegistry();
+    reg.register({ url: 'https://x/listeners', tool: 'analyze', destinationPath: mkdtempSync(join(tmpdir(), 'vem-cli-listeners-')) });
+    open.push(await setupLiveServer(reg));
+
+    const controller = new AbortController();
+    const done = runStatusCli(['--watch'], () => {}, { signal: controller.signal });
+
+    // Dense polling (every 30ms) across ~3.5s -- comfortably more than
+    // three WATCH_INTERVAL_MS (1000ms) ticks -- so the ~1000ms-long sleep
+    // phase of every tick is sampled many times over (virtually certain to
+    // observe it at least once per tick, even allowing for scheduler
+    // jitter), while a bug that leaks one listener per tick would be
+    // caught the moment any sample exceeds 1, well before the window ends.
+    let maxListeners = 0;
+    const pollUntil = Date.now() + 3_500;
+    while (Date.now() < pollUntil) {
+      maxListeners = Math.max(maxListeners, getEventListeners(controller.signal, 'abort').length);
+      await new Promise((resolve) => { setTimeout(resolve, 30); });
+    }
+
+    controller.abort();
+    const code = await done;
+
+    expect(code).toBe(0);
+    // Exactly 1: not 0 (which would mean this polling never actually
+    // caught a live sleep phase -- an unfalsifiable test) and not >1
+    // (accumulation).
+    expect(maxListeners).toBe(1);
+  }, 10_000);
+
+  it('production entrypoint: a bare `node dist/cli.js status --watch` process genuinely keeps re-rendering (regression: unref must not kill the loop)', async () => {
+    // Fix round 1 (coordinator review): an in-process vitest test
+    // structurally cannot catch this bug class. vitest's own worker
+    // process always has OTHER ref'd handles keeping its event loop alive
+    // (the test runner itself, its IPC channel, etc.), so the SAME
+    // abortableSleep() code observed "the loop advances" in-process even
+    // in the build where its timer was unref'd -- the exact build that,
+    // run as a bare `node dist/cli.js status --watch` process with
+    // NOTHING else keeping the event loop alive, rendered exactly once
+    // and exited in ~0.07s (reviewer's own reproduction). Only a real,
+    // separate subprocess can observe whether the loop survives its own
+    // pacing timer.
+    const cacheDir = mkdtempSync(join(tmpdir(), 'vem-cli-watch-subprocess-cache-'));
+    vi.stubEnv('VIDEO_EXTRACT_CACHE_DIR', cacheDir);
+
+    const reg = createStatusRegistry();
+    reg.register({ url: 'https://x/watchsubprocess', tool: 'analyze', destinationPath: mkdtempSync(join(tmpdir(), 'vem-cli-watch-subprocess-item-')) });
+    const ep = startStatusEndpoint(
+      reg, { pid: process.pid, version: '0.3.0', startedAt: Date.now(), concurrency: () => ({ cap: 4, running: 0, queued: 0 }) }, 0,
+    );
+    const url = await ep.url;
+    // This test process's own pid -- alive for the whole test, so the
+    // CHILD's own liveServers() call (kill(pid,0)) treats it as live.
+    registerServer({ pid: process.pid, port: Number(new URL(url!).port), startedAt: Date.now(), version: '0.3.0' });
+    open.push(ep);
+
+    const child = spawn(process.execPath, ['dist/cli.js', 'status', '--watch'], {
+      cwd: process.cwd(),
+      env: { ...process.env, VIDEO_EXTRACT_CACHE_DIR: cacheDir },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    child.stdout.on('data', (d: Buffer) => { stdout += d.toString('utf8'); });
+
+    try {
+      // The observation window itself -- WATCH_INTERVAL_MS is 1000ms, so
+      // ~2.5s real wall-clock time genuinely elapsing is what "does it
+      // loop more than once" means here, not something to poll around.
+      await new Promise((resolve) => { setTimeout(resolve, 2_500); });
+      // Every render is preceded by the ANSI full-reset byte sequence
+      // ('\x1Bc', gated to non-json renders) -- counting its occurrences
+      // in the raw piped stdout counts renders. One-sided assertion
+      // (>= 2, not an exact count) so scheduler/load variance can't flake
+      // this: a single render (the pre-fix bug) is 1, not >= 2, so the
+      // bug this guards against is caught regardless of exactly how many
+      // ticks a loaded machine manages in 2.5s.
+      const renderCount = stdout.split('\x1Bc').length - 1;
+      expect(renderCount).toBeGreaterThanOrEqual(2);
+    } finally {
+      child.kill('SIGKILL');
+    }
+  }, 15_000);
 });

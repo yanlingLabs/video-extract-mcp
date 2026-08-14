@@ -157,18 +157,40 @@ async function renderOnce(urls: string[], json: boolean, out: (line: string) => 
 }
 
 /** Resolves after `ms`, or immediately if `signal` is already (or becomes)
- *  aborted -- whichever comes first. Two independent teardown mechanisms,
- *  per the task's own constraint ("make sure the test suite never leaves a
- *  watch timer running (unref or explicit teardown)"): the pending timer is
- *  unref'd as a backstop (never holds the process open on its own), AND an
- *  abort clears it explicitly and resolves right away rather than waiting
- *  out the rest of the interval. */
+ *  aborted -- whichever comes first.
+ *
+ *  Deliberately NOT unref'd (fix round 1, coordinator review): this timer
+ *  is the watch loop's own pacing mechanism, not an incidental background
+ *  handle -- for a bare `node dist/cli.js status --watch` process there is
+ *  nothing ELSE keeping the event loop alive between renders, so unref'ing
+ *  it left Node with zero ref'd handles the instant this timer was armed,
+ *  and Node exits as soon as the loop has nothing left to wait for rather
+ *  than waiting for an unref'd timer to fire. Verified live against the
+ *  real compiled entrypoint: with unref(), `node dist/cli.js status
+ *  --watch` rendered exactly once and exited in ~0.07s. The task's own
+ *  "never leave a watch timer running" constraint is met by explicit
+ *  teardown alone (the abort listener below), which is sufficient on its
+ *  own and does not need unref as a second mechanism here -- every test
+ *  that exercises --watch aborts its own signal (or kills its own
+ *  subprocess) rather than relying on this timer firing or being unref'd.
+ *
+ *  The abort listener is removed on BOTH exit paths, not just the abort
+ *  path: `{ once: true }` only self-removes a listener that actually
+ *  FIRES. In real --watch usage nothing ever aborts the loop's own
+ *  controller, so the timer's NORMAL (non-abort) resolution -- the common
+ *  case, every single tick -- must also explicitly remove its listener, or
+ *  listeners accumulate one per render cycle for as long as the process
+ *  runs (fix round 1: reviewer measured 6 after 6 seconds under the
+ *  original code, which only removed the listener on the abort path). */
 function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
     if (signal.aborted) { resolve(); return; }
-    const timer = setTimeout(resolve, ms);
-    timer.unref();
-    signal.addEventListener('abort', () => { clearTimeout(timer); resolve(); }, { once: true });
+    const onAbort = (): void => { clearTimeout(timer); resolve(); };
+    const timer: NodeJS.Timeout = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal.addEventListener('abort', onAbort, { once: true });
   });
 }
 
@@ -204,7 +226,11 @@ export async function runStatusCli(
 
   const signal = opts.signal ?? new AbortController().signal;
   while (!signal.aborted) {
-    out('\x1Bc'); // ANSI full reset -- clears scrollback, not just the visible screen
+    // ANSI full reset -- clears scrollback, not just the visible screen.
+    // Only for the human render: --json is for scripting, and a raw
+    // control byte ahead of every JSON blob would corrupt a naive
+    // line-reading consumer's stream for no benefit (fix round 1).
+    if (!json) out('\x1Bc');
     await renderOnce(urls, json, out);
     await abortableSleep(WATCH_INTERVAL_MS, signal);
   }
