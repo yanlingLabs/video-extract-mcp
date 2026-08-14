@@ -35,6 +35,18 @@ const LIFETIME =
   + 'handle expires (default 30 minutes) and dies with the server process, but the '
   + 'files are the durable result and survive both.';
 
+// Task 7 (spec §9): one sentence, dictated verbatim by the plan, appended to
+// BOTH tool descriptions -- factored into a shared constant for the same
+// reason LIFETIME/PLATFORMS/BATCHING already are (one source, no risk of the
+// two copies drifting apart). Do not edit this string for style; it is
+// frozen text, same as the rest of ANALYZE_DESCRIPTION/RESOLVE_DESCRIPTION.
+const STATUS_NOTE =
+  'In background-task mode the reply also carries statusUrl, a local HTTP '
+  + 'address: GET it for every video this server is working on, with stage '
+  + 'history, timestamps and raw activity samples (child process CPU, bytes '
+  + 'written) -- observations only, no judgments; fetch it twice and compare '
+  + 'to tell slow from stuck.';
+
 const BATCHING =
   'videos is an array: pass one item for a single video, several to process a batch '
   + 'in one call. One video writes directly into destinationPath; several each write '
@@ -100,7 +112,7 @@ const ANALYZE_DESCRIPTION =
   + '~4.5 GB at the default cap of 4, and VIDEO_EXTRACT_MAX_CONCURRENCY=1 restores the '
   + 'old flat under-2GB behavior). A queued task can be cancelled; a task '
   + 'whose work has already started cannot -- it will refuse, finish, and deliver its '
-  + 'result. ' + LIFETIME + " Each item's result also carries videoPath, the local file it "
+  + 'result. ' + STATUS_NOTE + ' ' + LIFETIME + " Each item's result also carries videoPath, the local file it "
   + 'worked from, which you can pass straight back in to inspect another moment without '
   + 're-downloading. ' + PLATFORMS;
 
@@ -125,7 +137,7 @@ const RESOLVE_DESCRIPTION =
   + 'so, and gives the offset). ' + BATCHING + ' Use this tool when you only need to know '
   + 'what videos are, or when you want video files without any analysis. Called as a '
   + 'background task it returns a handle immediately and reports status while it runs; '
-  + 'resolve work is never queued behind analyses. ' + LIFETIME + ' ' + PLATFORMS + ' Comments are '
+  + 'resolve work is never queued behind analyses. ' + STATUS_NOTE + ' ' + LIFETIME + ' ' + PLATFORMS + ' Comments are '
   + 'off by default and can be slow to fetch on popular videos; when enabled they are '
   + 'written to the metadata file, never returned inline.';
 
@@ -337,14 +349,14 @@ function runAnalyzeExecution(
   });
 }
 
-// Task 5: the version string stamped into BOTH the status endpoint's own
+// Task 5: the version string stamped into the status endpoint's own
 // `StatusServerInfo` (below) and the discovery registry's `ServerEntry` --
-// factored into one constant, rather than two independent '0.3.0' literals,
+// factored into one constant, rather than independent '0.3.0' literals,
 // specifically so a future edit to one cannot silently drift from the
-// other; the two describe the exact same server. (Task 4's own report
-// already flags a separate, pre-existing mismatch against McpServer's own
-// `serverInfo.version` below, still '0.2.0' -- deferred to Task 7, not
-// touched here.)
+// other; the two describe the exact same server. Task 7 folds McpServer's
+// own `serverInfo.version` (below) into the same constant too, closing the
+// skew Task 4's report flagged (the endpoint read '0.3.0' while McpServer
+// still read '0.2.0') -- all three now name one server, one version.
 const STATUS_VERSION = '0.3.0';
 
 // Task 5: cross-session discovery (src/status/discovery.ts). Installed at
@@ -410,12 +422,12 @@ export function buildServer(opts?: { analyzeSlots?: SlotPool; statusPort?: numbe
   // when explicitly provided (including `null`, hence the `!== undefined`
   // check rather than `??`); left unset, `statusPortFromEnv()` decides
   // (default: ephemeral port, endpoint ON). The endpoint's own `version`
-  // (STATUS_VERSION, '0.3.0') matches the brief's snippet -- the version
-  // this whole plan ships under -- rather than McpServer's construction
-  // just below, which still reads '0.2.0' (package.json's current
-  // published version); this mismatch is pre-existing in the brief itself,
-  // not introduced here (see the task report's "anything wrong in the
-  // brief" section).
+  // (STATUS_VERSION) and McpServer's own `serverInfo.version` just below
+  // now both read from that ONE constant (Task 7: reconciles the skew
+  // Task 4's report flagged -- the endpoint reported '0.3.0' while
+  // McpServer's construction still read '0.2.0', matching package.json's
+  // then-published version; package.json is '0.3.0' now too, so all three
+  // agree).
   //
   // Task 5: `startedAt` captured once, here, rather than calling Date.now()
   // separately for the endpoint's StatusServerInfo and for the discovery
@@ -460,7 +472,7 @@ export function buildServer(opts?: { analyzeSlots?: SlotPool; statusPort?: numbe
     registerServer({ pid: process.pid, port: Number(new URL(su).port), startedAt, version: STATUS_VERSION });
   });
   const server = new McpServer(
-    { name: 'norma-video', version: '0.2.0' },
+    { name: 'norma-video', version: STATUS_VERSION },
     {
       taskStore: store,
       instructions: SERVER_INSTRUCTIONS,

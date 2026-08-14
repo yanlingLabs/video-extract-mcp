@@ -102,6 +102,30 @@ never queues (it bypasses the analyze pool entirely), so every cancel on a live
 pretend-cancel that reports `cancelled` while the work quietly finishes underneath —
 that is exactly the dishonesty class this project exists to kill.
 
+**The status registry is per-server and in-memory, never persisted.**
+`createStatusRegistry()` (`src/status/registry.ts`) is instantiated once per
+`buildServer()` call — no module-level registry, the same no-shared-mutable-state
+rule `store`/`pool` already follow. The only file the whole status feature ever
+writes is the discovery registry (`~/.cache/video-extract-mcp/servers.json`,
+`src/status/discovery.ts`, overridable via the test-facing `VIDEO_EXTRACT_CACHE_DIR`)
+— written once at server start, removed once at exit, and rewritten by readers only
+when a liveness check actually finds something dead to prune. Nothing about a stage
+transition ever touches disk.
+
+**Status payloads and CLI output carry observables, never verdicts.** No `stale`,
+`stuck`, `healthy`, or fabricated percentage may ever appear in the `/status` JSON
+or the `video-extract status` render — tests grep both the payload and the
+rendered text for verdict words. The reader (agent or human) judges slow-vs-stuck
+itself, by polling twice and diffing `childCpuSeconds`/`workDirBytes`. Do not add a
+health/staleness field to make the output more readable — that judgment belongs to
+the caller, not this server.
+
+**The status endpoint must stay unref'd.** `src/status/endpoint.ts`'s listener and
+every accepted socket call `.unref()` so a live endpoint can never hold the process
+open — the exact 0.2.0 zombie-process class this feature must not reintroduce.
+`tests/mcpProcessLifecycle.test.ts` guards this with the endpoint genuinely live;
+dropping either unref call must fail it.
+
 **Workers are resolved as siblings of the *running* module**, so they only exist in
 compiled output — from `src/` under tsx the sibling is a `.ts` file and the spawn
 misses. The failure is quiet: the stage degrades, and the only trace is a
@@ -161,9 +185,12 @@ deferred item with its reasoning — check it before "discovering" a known gap.
 ## Reference
 
 - `docs/superpowers/specs/` — design docs; the v2 spec governs the agent surface,
-  the tasks-and-batching spec (2026-08-12) governs tasks/batching on top of it
+  the tasks-and-batching spec (2026-08-12) governs tasks/batching on top of it, and
+  the status-channel spec (2026-08-13) governs the observable status registry,
+  `/status` endpoint, and `video-extract status` CLI on top of both
 - `docs/follow-ups.md` — deferred work, with the reasoning that deferred it
 - Env: `VIDEO_EXTRACT_MODELS_DIR`, `VIDEO_EXTRACT_WECHAT_COOKIE`,
-  `VIDEO_EXTRACT_MAX_CONCURRENCY`, `VIDEO_EXTRACT_TASK_TTL_MS`
+  `VIDEO_EXTRACT_MAX_CONCURRENCY`, `VIDEO_EXTRACT_TASK_TTL_MS`,
+  `VIDEO_EXTRACT_STATUS_PORT` (README has the full table)
 - WeChat resolution was **clean-room derived**; the well-known reference
   implementation is MIT + Commons Clause. Never consult it when extending that code.

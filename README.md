@@ -10,7 +10,7 @@ Built for AI agents. Two MCP tools, no cloud, no API keys, no Python.
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%E2%89%A526-brightgreen.svg)](https://nodejs.org)
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-blue.svg)](https://www.typescriptlang.org/)
-[![Tests](https://img.shields.io/badge/tests-492%20passing-success.svg)](#testing)
+[![Tests](https://img.shields.io/badge/tests-550%20passing-success.svg)](#testing)
 [![MCP](https://img.shields.io/badge/MCP-server-orange.svg)](https://modelcontextprotocol.io)
 
 ---
@@ -84,6 +84,7 @@ npm run preflight            # verifies ffmpeg / ffprobe / yt-dlp / tesseract
 | `VIDEO_EXTRACT_WECHAT_COOKIE` | A yuanbao session cookie, required only for WeChat Channels links. |
 | `VIDEO_EXTRACT_MAX_CONCURRENCY` | Caps concurrent `analyze_video` item executions — plain calls and background tasks, batch items and separate calls, all count against the same limit. Default `4`. `resolve_video` is exempt: it loads no models, so there is nothing to throttle. |
 | `VIDEO_EXTRACT_TASK_TTL_MS` | How long a completed background-task handle stays queryable before it expires. Default `1800000` (30 minutes). `0` (or any non-positive value) means the handle never expires. Governs the in-memory handle only — files already written to `destinationPath` are never deleted by the tool, expired handle or not. |
+| `VIDEO_EXTRACT_STATUS_PORT` | Pins the port of the localhost `/status` endpoint (see [Watching progress](#watching-progress)). Unset picks an ephemeral port each start (default: endpoint on). The literal value `0` disables the endpoint entirely — note the contrast with `VIDEO_EXTRACT_TASK_TTL_MS` above, where `0` means *no expiry*, not disabled. |
 
 ## Three ways to use it
 
@@ -244,6 +245,37 @@ Both tools are task-capable. Called as a plain MCP tool call, every example abov
 - **Handles are in-memory only.** They expire `VIDEO_EXTRACT_TASK_TTL_MS` after the task completes (default 30 minutes) and die with the server process regardless — the server process itself exits promptly once its stdin closes, even with handles still pending. Files already written to `destinationPath` are unaffected either way — the tool never deletes them, expired handle or not.
 - **Plain calls work everywhere, with that one caveat.** Task support requires an MCP client that implements the experimental tasks capability; without one, both tools behave exactly as documented above, synchronously, modulo the ~150ms floor above.
 
+## Watching progress
+
+`statusMessage` (above) is a snapshot at each poll — useful, but coalesced, and gone once the task completes. For anything longer-lived — checking from a different terminal, after a client restarted, across every video every server on the machine is working on — every server also runs a small, local, always-on status channel. Its one governing rule: **the server reports observations, never judgments.** No response anywhere in this channel ever says `stale`, `stuck`, or `healthy`, or invents a completion percentage — that call belongs to whoever is asking, made by polling twice and comparing.
+
+**The CLI.** Once installed, `video-extract status [--watch] [--json] [url...]` discovers every *live* `video-extract-mcp` server on the machine — each MCP client spawns its own server process, and this merges across all of them, not just whichever one you happen to be talking to — and renders one view:
+
+```
+https://youtu.be/AbC123xyz  resolving → downloading → transcribing  (45s in stage) · asrWorker pid 4122 · cpu 38.2s · workdir 892 MB
+https://youtu.be/DeF456uvw  resolving → downloading → transcribing → frames  (done 2m ago) · workdir 61 MB
+https://tiktok.com/@u/video/789  resolving → downloading  (372s in stage) · yt-dlp pid 4210 · cpu 12.4s · workdir 412 MB
+https://youtu.be/JkL012rst  queued
+server pid 4098 · up 14m · cap 4 · running 2 · queued 1
+```
+
+Every field is exactly what it says: raw stage names in the order they fired, raw elapsed time, the child process actually doing the work and its cumulative CPU, and the working directory's byte count. `--watch` re-renders in place every second until you press Ctrl-C; `--json` prints the same, merged across every live server, as plain JSON with no ANSI control bytes, for scripting rather than reading; any positional argument filters the output to just that URL (repeatable). With no live servers it prints `no live video-extract servers` and exits 0.
+
+**The endpoint.** Every server also runs a localhost-only `GET /status` — bound to an ephemeral port by default — that the CLI above is itself just a client of. Its URL is `statusUrl` in a background task's handle reply and in every completed result (`null` when the endpoint is disabled), so an agent already holding a task handle or a result never has to shell out to find it:
+
+```bash
+curl http://127.0.0.1:PORT/status
+curl 'http://127.0.0.1:PORT/status?url=https://youtu.be/AbC123xyz'   # repeatable
+```
+
+`VIDEO_EXTRACT_STATUS_PORT` pins that port instead of picking one at random; the literal value `0` disables the endpoint entirely (see the environment table below).
+
+**Telling slow from stuck.** The server reports observations, never judgments — poll twice and compare CPU/bytes to tell a slow download from a stuck one. A download silent for six minutes is routine for a huge video and a bug on bad wifi; nothing in this channel guesses which. Fetch `/status` (or run `video-extract status`) a few seconds apart and diff `childCpuSeconds` and the workdir byte count for the item in question — moving means it's working, flat means it genuinely is not.
+
+**Stopping something.** There is no `cancel` subcommand for this channel — stopping is a plain `kill` against a pid the status output just showed you, and the two targets you can aim it at behave differently, on purpose: killing an item's child process makes that item fail honestly while the batch continues and the task itself still completes; killing the server's own pid stops everything, and whatever was already written to `destinationPath` survives, exactly as if the server had exited normally.
+
+A server that exits takes its in-memory status history with it — there is no cross-restart persistence, by design (see `docs/follow-ups.md`). Nothing about that loses what matters: the files at `destinationPath` are the durable record either way.
+
 ## What "important frame" actually means
 
 Each candidate frame is scored on:
@@ -281,7 +313,7 @@ WeChat Channels (视频号) support is worth calling out: it resolves **headless
 
 What is verified:
 
-- 492 automated tests pass, including integration tests driving a real MCP client end-to-end against synthetic video fixtures.
+- 550 automated tests pass, including integration tests driving a real MCP client end-to-end against synthetic video fixtures — among them the status channel's own kill-workflow test: observe a live item's child pid via `/status`, kill it, confirm that item fails honestly while its batch sibling still completes.
 - The WeChat resolution protocol was verified live, end to end, returning a real MP4.
 - Caption-tier selection was verified against the installed yt-dlp's own source.
 - The memory rate and single-frame latency are measured numbers, not estimates.
