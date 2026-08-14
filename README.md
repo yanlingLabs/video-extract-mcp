@@ -352,7 +352,7 @@ If you run the matrix against real URLs, that result is the single most valuable
 
 ## Contributing
 
-Contributions are genuinely welcome, and there is a clear on-ramp.
+Contributions are genuinely welcome, and there is a clear on-ramp. **[CONTRIBUTING.md](CONTRIBUTING.md)** has the full version — setup, the build trap that will otherwise waste your first hour, the testing standard, and the invariants that break quietly. The short version:
 
 **Highest value first:** run `npm run matrix` with real URLs in the environment variables it names, and open an issue with what you saw. That converts the project's biggest unknown into fact.
 

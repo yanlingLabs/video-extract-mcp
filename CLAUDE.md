@@ -21,10 +21,12 @@ npx vitest run tests/captions.test.ts
 npx vitest run tests/captions.test.ts -t "partial test name"
 ```
 
-**`npx vitest run` does not build.** Only `npm test` does (via `pretest`). Nine test
-files `vi.mock` and import from `../dist/`, so running them against a stale or
+**`npx vitest run` does not build.** Only `npm test` does (via `pretest`). Many test
+files `vi.mock` and `await import('../dist/...')`, so running them against a stale or
 missing `dist/` gives results that have nothing to do with your edit. When
-iterating on a single file, rebuild between changes.
+iterating on a single file, rebuild between changes. For the current list, run
+`grep -rl "dist/" tests/` — deliberately not a count here, since the number grew
+from 9 to 16 while this line still said "nine".
 
 Many tests self-skip via `describe.skipIf(!ready)` when the ~1.5 GB speech models
 or system binaries are absent. A green run is not proof those paths ran — check
