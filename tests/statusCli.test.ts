@@ -394,4 +394,77 @@ describe('video-extract status CLI', () => {
       child.kill('SIGKILL');
     }
   }, 15_000);
+
+  it('status --json through a REAL PIPE does not truncate a payload bigger than one pipe buffer (final review, Critical 1)', async () => {
+    // src/cli.ts's main() used to call process.exit() immediately after
+    // console.log(json) -- fine when stdout is a file (sync fd) but wrong
+    // when it's a PIPE: pipe writes are asynchronous in Node, so exit() can
+    // fire before the write actually drains, silently cutting the process
+    // off mid-write. The registry's own 500-item cap means an at-capacity
+    // server's payload reliably exceeds one pipe buffer (64KB) on its own --
+    // this seeds exactly that many items rather than an artificial size.
+    const cacheDir = mkdtempSync(join(tmpdir(), 'vem-cli-pipe-cache-'));
+    vi.stubEnv('VIDEO_EXTRACT_CACHE_DIR', cacheDir);
+
+    const reg = createStatusRegistry();
+    const urls: string[] = [];
+    for (let i = 0; i < 500; i++) {
+      // Padded well past a realistic bare URL so 500 items comfortably clear
+      // one pipe buffer without relying on stageHistory/destinationPath
+      // alone to get there.
+      const url = `https://example.test/video/${'x'.repeat(80)}-${i}`;
+      urls.push(url);
+      const id = reg.register({ url, tool: 'analyze', destinationPath: `/nonexistent/vem-pipe-item-${i}` });
+      reg.stage(id, 'resolving');
+      reg.stage(id, 'downloading');
+    }
+    const ep = startStatusEndpoint(
+      reg, { pid: process.pid, version: '0.3.0', startedAt: Date.now(), concurrency: () => ({ cap: 4, running: 500, queued: 0 }) }, 0,
+    );
+    open.push(ep);
+    const url = (await ep.url)!;
+    registerServer({ pid: process.pid, port: Number(new URL(url).port), startedAt: Date.now(), version: '0.3.0' });
+
+    // Sanity precondition on the endpoint directly (no pipe involved, so
+    // this fetch cannot itself be truncated): proves the scenario is
+    // genuinely realistic -- something a single pipe buffer cannot hold --
+    // rather than the test passing because there was nothing to truncate.
+    const rawPayload = await (await fetch(url)).text();
+    expect(Buffer.byteLength(rawPayload, 'utf8')).toBeGreaterThan(65_536);
+
+    const child = spawn(process.execPath, ['dist/cli.js', 'status', '--json'], {
+      cwd: process.cwd(),
+      env: { ...process.env, VIDEO_EXTRACT_CACHE_DIR: cacheDir },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const chunks: Buffer[] = [];
+    child.stdout.on('data', (d: Buffer) => chunks.push(d));
+    let stderr = '';
+    child.stderr.on('data', (d: Buffer) => { stderr += d.toString('utf8'); });
+
+    // Bounded wait for real process exit -- this also proves the fix does
+    // not merely avoid truncation but lets the process exit promptly on its
+    // own (process.exitCode, not a hang), matching the finding's other
+    // requirement.
+    const exitCode = await new Promise<number | null>((resolve, reject) => {
+      const killTimer = setTimeout(() => {
+        child.kill('SIGKILL');
+        reject(new Error(`CLI did not exit on its own within the bound (stderr: ${stderr})`));
+      }, 10_000);
+      child.on('close', (code) => { clearTimeout(killTimer); resolve(code); });
+      child.on('error', (e) => { clearTimeout(killTimer); reject(e); });
+    });
+
+    expect(exitCode).toBe(0);
+    // The decisive assertion: a truncated payload is not merely short, it is
+    // syntactically invalid JSON (cut mid-string/mid-object) -- JSON.parse
+    // succeeding at all, with every seeded item present, is what "not
+    // truncated" actually means here; a byte-length threshold on the piped
+    // output would just be a hard-coded proxy for this.
+    const stdout = Buffer.concat(chunks).toString('utf8');
+    const parsed = JSON.parse(stdout) as Array<{ items: Array<{ url: string }> }>;
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0]!.items).toHaveLength(500);
+    expect(parsed[0]!.items.map((i) => i.url).sort()).toEqual([...urls].sort());
+  }, 20_000);
 });

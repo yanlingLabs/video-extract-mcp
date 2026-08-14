@@ -47,7 +47,29 @@ async function main(): Promise<void> {
   // a subcommand, not a url/path positional, and must never reach
   // parseArgs's own positional-argument handling below.
   if (process.argv[2] === 'status') {
-    process.exit(await runStatusCli(process.argv.slice(3), (l) => console.log(l)));
+    // Final whole-branch review, Critical 1: process.exit() right after the
+    // last console.log() raced stdout's own drain -- writes to a PIPE are
+    // asynchronous in Node (unlike a file fd, which is synchronous), so the
+    // process could exit having flushed only the first ~64KB (one pipe
+    // buffer) of a larger payload, silently truncating it into invalid
+    // JSON at exit code 0. The registry's own 500-item cap means an
+    // at-capacity server's --json payload reliably exceeds 64KB on its own,
+    // and the README sells --json for scripting, i.e. piping.
+    //
+    // Setting process.exitCode instead lets Node exit NATURALLY once every
+    // queued write (stdout, and console.log's own) has actually drained --
+    // Node will not end the process while output is still pending on a
+    // stream. Nothing else in this command keeps the event loop open by the
+    // time runStatusCli's returned promise settles: the non-watch path
+    // (the only path that ever reaches here, since main() never returns
+    // from the watch loop below) awaits a single renderOnce() and returns,
+    // with no server, timer or socket left behind for this process to wait
+    // on -- verified empirically against the compiled CLI with a payload
+    // several times larger than one pipe buffer, piped (not redirected to a
+    // file): the fixed process exits promptly with the complete payload
+    // intact, not hung waiting on some other lingering handle.
+    process.exitCode = await runStatusCli(process.argv.slice(3), (l) => console.log(l));
+    return;
   }
   const { url, opts } = parseArgs(process.argv.slice(2));
   if (!url) {
