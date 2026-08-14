@@ -52,13 +52,14 @@ export class DirectMediaResolver implements VideoResolver {
       if (/\.(m3u8|mpd)(\?|#|$)/i.test(url)) {
         const r = await run('ffmpeg', ['-y', '-i', url, '-f', 'mp4', '-c', 'copy', partial], { timeoutMs: MEDIA_DOWNLOAD_TIMEOUT_MS });
         if (r.code !== 0) {
-          // A failed mux can leave a partial behind, and this return bypasses
-          // the catch below, so it cleans up itself. Deliberately uncovered:
-          // ffmpeg that exits non-zero has generally written nothing, and
-          // ffmpeg that writes bytes generally exits 0 (it skips a failed
-          // segment). The one shape that produces both is run()'s own
-          // 15-minute timeout SIGKILLing a mux mid-write, which no test can
-          // reach without a 15-minute wait. Kept as defence, not decoration.
+          // A failed mux can leave a partial behind, and this return
+          // bypasses the catch below, so it cleans up itself. Real ffmpeg
+          // rarely produces that state -- exiting non-zero it has usually
+          // written nothing, and writing bytes it usually exits 0 (a bad
+          // segment is skipped). The shape that produces both is run()'s
+          // timeout SIGKILLing a mux mid-write, which returns code -1;
+          // tests/partialsMuxFailure.test.ts reproduces exactly that with a
+          // mocked run() rather than waiting out a 15-minute timeout.
           discardPartial(partial);
           return { status: 'extractor_failed', message: `ffmpeg could not fetch stream: ${r.stderr.slice(-300)}` };
         }

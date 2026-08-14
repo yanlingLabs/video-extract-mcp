@@ -46,18 +46,25 @@ import { join } from 'node:path';
  *  - `source.f137.mp4.part-Frag12` an in-flight fragment
  *  - `source.f137.mp4.ytdl`        yt-dlp resume state
  *  - `source.f137.mp4`             a per-format file a merge never consumed
+ *  - `source.faud-English.mp4`     the same, with a non-numeric format id
  *  - `source.temp.mp4`             a half-written mux
  *
- * The last two carry ordinary media extensions, which is exactly why they
+ * The last three carry ordinary media extensions, which is exactly why they
  * matter: a killed merge leaves a truncated `source.temp.mp4` -- the shape
  * this whole module exists to keep out of a caller's directory.
+ *
+ * Those are matched on `source.<anything>.<media extension>` rather than on
+ * the format id's shape, because real format ids are not numeric
+ * (`faud-English`, `251-drc`, `play_addr`) -- but widening the id charset
+ * instead would swallow `source.fr.vtt`, a genuine subtitle output. The
+ * media-extension allowlist is what keeps captions and manifests out of
+ * range while still catching every format id yt-dlp can mint.
  */
 const OURS = new RegExp(
   '^source\\.[^/]*\\.part$'
   + '|^source\\.[^/]*\\.part-Frag\\d+$'
   + '|^source\\.[^/]*\\.ytdl$'
-  + '|^source\\.f\\d+\\.[^./]+$'
-  + '|^source\\.temp\\.[^./]+$',
+  + '|^source\\.[^./]+\\.(?:mp4|m4v|mov|mkv|webm|ts|m4a|aac|opus|mp3|flac|wav)$',
 );
 
 /**

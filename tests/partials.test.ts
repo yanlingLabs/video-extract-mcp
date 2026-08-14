@@ -79,18 +79,34 @@ describe('sweepStalePartials', () => {
     expect(existsSync(dead)).toBe(false);
   });
 
-  it('exposes no way to lower the age gate', () => {
-    // Enforced by the signature, not by an assertion: an earlier draft took
-    // a maxAgeMs override, a caller passed 0 meaning "clean up after
-    // myself", and it deleted a concurrent download's live bytes. A test
-    // asserting the old override was safe was itself flaky, because it
-    // wasn't. sweepStalePartials now takes exactly one argument.
-    expect(sweepStalePartials.length).toBe(1);
+  it('cannot have its age gate lowered by a second argument', () => {
+    // An earlier draft took a maxAgeMs override; a caller passed 0 meaning
+    // "clean up after myself" and it deleted a concurrent download's live
+    // bytes. Passing 0 here must be INERT, not merely absent from the
+    // signature -- `Function.length` cannot express that (it ignores
+    // defaulted parameters, so the dangerous signature scores 1 too).
+    // Back-dated a full minute so this cannot hinge on sub-millisecond
+    // mtime rounding, which is what made the previous version of this test
+    // flake 5 times in 40 runs.
     const dir = mkdtempSync(join(tmpdir(), 'vem-noblind-'));
-    const fresh = join(dir, 'source.mp4.1-1.part');
-    writeFileSync(fresh, 'live bytes');
-    expect(sweepStalePartials(dir)).toBe(0);
-    expect(existsSync(fresh)).toBe(true);
+    const live = aged(dir, 'source.mp4.1-1.part', 60_000);
+    expect((sweepStalePartials as (d: string, ms?: number) => number)(dir, 0)).toBe(0);
+    expect(existsSync(live)).toBe(true);
+  });
+
+  it('matches format ids that are not numeric, without swallowing subtitles', () => {
+    // Real yt-dlp format ids are rarely numeric -- 'faud-English' (HLS),
+    // '251-drc' (YouTube), 'play_addr' (TikTok). Matching on the id's shape
+    // misses those; matching on a MEDIA extension catches them all while
+    // leaving source.fr.vtt -- a genuine subtitle output -- alone.
+    const dir = mkdtempSync(join(tmpdir(), 'vem-fmtids-'));
+    aged(dir, 'source.faud-English.mp4', ANCIENT);
+    aged(dir, 'source.251-drc.webm', ANCIENT);
+    aged(dir, 'source.play_addr.mp4', ANCIENT);
+    const subs = ['source.fr.vtt', 'source.en.vtt', 'source.zh-Hans.srt', 'auto.fr.vtt']
+      .map((n) => aged(dir, n, ANCIENT));
+    expect(sweepStalePartials(dir)).toBe(3);
+    for (const f of subs) expect(existsSync(f)).toBe(true);
   });
 
   it('collects the litter a killed MERGE leaves -- media extensions and all', () => {

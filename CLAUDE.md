@@ -153,7 +153,7 @@ Three rules, each of which cost a real bug:
 - **The pattern is anchored to `source.`, not to `.part`.** `.part` is a
   shared convention (Firefox, a user's own yt-dlp), so a bare suffix match
   inside the caller's directory deletes THEIR files — while missing the
-  litter yt-dlp actually leaves (`-FragN`, `.ytdl`, per-format `source.fNNN.*`,
+  litter yt-dlp actually leaves (`-FragN`, `.ytdl`, per-format `source.<id>.<media ext>`,
   and a truncated `source.temp.mp4`, which wears a media extension).
 - **Cleanup is age-gated, always, with no override.** Neither a directory
   sweep nor a before/after snapshot can distinguish an abandoned partial

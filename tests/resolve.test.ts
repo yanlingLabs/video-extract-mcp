@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
-import { existsSync, mkdtempSync, readFileSync, writeFileSync, copyFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync, copyFileSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { classifyYtDlpError, pickResolver } from '../src/resolve/index.js';
@@ -418,10 +418,20 @@ describe('WeChatHeadlessResolver.resolve() against a stubbed network (hermetic, 
         respond: () => new Response(new Uint8Array(fixtureVideo), { status: 200, headers: { 'Content-Type': 'video/mp4' } }) },
     ]);
 
+    // An abandoned partial from an earlier crashed run, old enough to be
+    // collectable: WeChat's entry sweep is the third such call site and was
+    // the one with no coverage -- it could be deleted outright with the
+    // whole suite green.
+    const staleOrphan = join(workDir, 'source.mp4.4242-9.part');
+    writeFileSync(staleOrphan, Buffer.alloc(4096));
+    const longAgo = new Date(Date.now() - 24 * 60 * 60_000);
+    utimesSync(staleOrphan, longAgo, longAgo);
+
     const result = await new WeChatHeadlessResolver().resolve('https://weixin.qq.com/sph/abc', { workDir });
     expect(result.status).toBe('ok');
     if (result.status !== 'ok') return;
     expect(existsSync(result.filePath)).toBe(true);
+    expect(existsSync(staleOrphan)).toBe(false);
     expect(result.resolvedBy).toBe('wechat');
     expect(result.title).toBe('Tester');
     // Documented platform prior (see download() in src/resolve/wechat.ts):
