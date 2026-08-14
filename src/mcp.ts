@@ -39,9 +39,21 @@ const LIFETIME =
 // BOTH tool descriptions -- factored into a shared constant for the same
 // reason LIFETIME/PLATFORMS/BATCHING already are (one source, no risk of the
 // two copies drifting apart). Do not edit this string for style; it is
-// frozen text, same as the rest of ANALYZE_DESCRIPTION/RESOLVE_DESCRIPTION.
+// frozen text, same as the rest of ANALYZE_DESCRIPTION/RESOLVE_DESCRIPTION,
+// except for the final whole-branch review's Minor finding 7 fix just below.
+//
+// Final whole-branch review, Minor finding 7: the original text opened "In
+// background-task mode the reply also carries statusUrl", but toResult()
+// (above) stamps statusUrl into EVERY completed reply, not just a
+// task-mode one -- a plain client.callTool() is served by the SDK's own
+// automatic task-polling bridge underneath (task-1-report.md's "linchpin"
+// finding) and goes through this exact same createTask/toResult path, so
+// it gets statusUrl too (tests/mcpProcessLifecycle.test.ts:145 asserts
+// this on a plain call). Minimal fix: drop the inaccurate "In
+// background-task mode" qualifier so the sentence is true for both: only
+// this clause moves, nothing else in the frozen text does.
 const STATUS_NOTE =
-  'In background-task mode the reply also carries statusUrl, a local HTTP '
+  'The reply also carries statusUrl, a local HTTP '
   + 'address: GET it for every video this server is working on, with stage '
   + 'history, timestamps and raw activity samples (child process CPU, bytes '
   + 'written) -- observations only, no judgments; fetch it twice and compare '
