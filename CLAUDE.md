@@ -105,11 +105,16 @@ that is exactly the dishonesty class this project exists to kill.
 **The status registry is per-server and in-memory, never persisted.**
 `createStatusRegistry()` (`src/status/registry.ts`) is instantiated once per
 `buildServer()` call — no module-level registry, the same no-shared-mutable-state
-rule `store`/`pool` already follow. The only file the whole status feature ever
-writes is the discovery registry (`~/.cache/video-extract-mcp/servers.json`,
-`src/status/discovery.ts`, overridable via the test-facing `VIDEO_EXTRACT_CACHE_DIR`)
-— written once at server start, removed once at exit, and rewritten by readers only
-when a liveness check actually finds something dead to prune. Nothing about a stage
+rule `store`/`pool` already follow. The only files the whole status feature ever
+writes are the discovery entries, one per live server
+(`~/.cache/video-extract-mcp/servers/<pid>.json`, `src/status/discovery.ts`,
+overridable via the test-facing `VIDEO_EXTRACT_CACHE_DIR`) — each written once at
+server start, removed once at exit, and removed by readers only when a liveness
+check actually finds that pid dead. One file per pid, not one shared file, is
+deliberate: it removes the simultaneous-server-start race entirely (final
+whole-branch review, Important finding 3) rather than narrowing it — two servers
+starting at the same instant write to two different paths, so there is no shared
+state for a read-modify-write to lose an entry over. Nothing about a stage
 transition ever touches disk.
 
 **Status payloads and CLI output carry observables, never verdicts.** No `stale`,
