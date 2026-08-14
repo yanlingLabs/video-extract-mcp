@@ -135,38 +135,88 @@ function handleRequest(
   res.end(JSON.stringify(payload));
 }
 
+/**
+ * Final whole-branch review, Important finding 4: `workDirBytes` is sampled
+ * only for an item WITHOUT an `outcome` -- a finished item's byte count is
+ * static (nothing writes into destinationPath after the item's own promise
+ * settles), so re-walking it on every poll is pure waste that scales with
+ * the registry's cap (500 completed items can sit around), not the
+ * concurrency cap (a handful running at once) -- measured live: 500
+ * completed items x 40 files cost 75ms on its own, on top of whatever a
+ * genuinely large running item's own directory cost. Skipping completed
+ * items outright, combined with workDirBytesOf's own bounded walk below,
+ * is what makes a request's cost track "how much is currently running",
+ * the only thing actually changing between polls, not "how much history
+ * the registry happens to be holding".
+ */
 function decorateItem(item: StatusItem): StatusItem & { workDirBytes?: number; childCpuSeconds?: number } {
   return {
     ...item,
-    workDirBytes: workDirBytesOf(item.destinationPath),
+    workDirBytes: item.outcome === undefined ? workDirBytesOf(item.destinationPath) : undefined,
     childCpuSeconds: item.childPid !== undefined ? childCpuSecondsOf(item.childPid) : undefined,
   };
 }
 
+/** Final whole-branch review, Important finding 4: readdirSync(dir,
+ *  {recursive:true}) is itself the unbounded cost -- it walks the ENTIRE
+ *  tree in one native call before this function ever gets to look at what
+ *  it found, so capping "how many entries we sum" after the fact would not
+ *  have bounded the blocking time at all (measured live: 794ms/request at
+ *  50,000 files, 748ms of it timer lag -- that cost is paid inside the one
+ *  readdirSync call, not the summation loop after it). Bounding the WALK
+ *  itself requires walking by hand, one directory at a time, so the count
+ *  can be checked -- and the whole thing abandoned -- before finishing a
+ *  pathologically large subtree. */
+const WORKDIR_SCAN_ENTRY_CAP = 2_000;
+
 /**
- * Recursive byte size of `dir`. This is the plan-level resolution of spec
- * §3's registry-level "workDir" field: `StatusItem` deliberately has no
- * such field (see src/status/registry.ts / task-1-report.md) because for a
- * URL source the pipeline's working directory already IS `destinationPath`
- * (the outDir passed down to the resolver), and for a local-file source the
- * internal mkdtemp the pipeline may use is never known at the agent layer
- * that populates the registry. `destinationPath` is the one directory this
+ * Byte size of `dir`, walked by hand (not `readdirSync(..., {recursive:
+ * true})` -- see WORKDIR_SCAN_ENTRY_CAP's own comment) and bounded to at
+ * most WORKDIR_SCAN_ENTRY_CAP directory entries total (files and
+ * directories alike, since both cost a readdir/stat call to visit).
+ * Benchmarked (scratchpad, not shipped): at 2,000 the worst case measured
+ * -- a single flat 50,000-file directory, which a per-entry cap can only
+ * partially help with, since one `readdirSync` call must still enumerate
+ * the whole flat listing before entries can be counted -- was ~25ms, an
+ * ~8x improvement on the old unbounded call's ~206ms; the common,
+ * many-smaller-directories case was sub-3ms even at 50,000 total files.
+ *
+ * This is the plan-level resolution of spec §3's registry-level "workDir"
+ * field: `StatusItem` deliberately has no such field (see
+ * src/status/registry.ts / task-1-report.md) because for a URL source the
+ * pipeline's working directory already IS `destinationPath` (the outDir
+ * passed down to the resolver), and for a local-file source the internal
+ * mkdtemp the pipeline may use is never known at the agent layer that
+ * populates the registry. `destinationPath` is the one directory this
  * feature owns and can observe for *every* item, URL or local, and it is
  * where downloads and frames actually accumulate on disk -- so it is what
  * gets sampled here, at request time, rather than a separate tracked field.
  *
- * Best-effort: the directory may not exist yet (nothing downloaded so
- * far), so any failure -- missing dir, a file vanishing mid-scan, anything
- * else -- returns undefined rather than throwing, and the field is simply
- * absent from that item's payload.
+ * Best-effort AND bounded: a missing directory, a file vanishing mid-scan,
+ * or any other failure returns undefined exactly as before; hitting the
+ * entry cap ALSO returns undefined, deliberately, rather than the partial
+ * count seen so far -- "a wrong number is worse than an absent one" under
+ * this project's observables-never-verdicts posture (the poll-twice-and-
+ * diff workflow depends on two samples meaning the same thing; a partial
+ * count shaped by directory iteration order, not by what genuinely
+ * changed between polls, would silently violate that). Either way the
+ * field is simply absent from that item's payload.
  */
 function workDirBytesOf(dir: string): number | undefined {
   try {
-    const entries = readdirSync(dir, { withFileTypes: true, recursive: true });
     let total = 0;
-    for (const entry of entries) {
-      if (!entry.isFile()) continue; // directory entries themselves carry no content bytes
-      total += statSync(join(entry.parentPath, entry.name)).size;
+    let count = 0;
+    const stack: string[] = [dir];
+    while (stack.length > 0) {
+      const current = stack.pop()!;
+      const entries = readdirSync(current, { withFileTypes: true });
+      for (const de of entries) {
+        count++;
+        if (count > WORKDIR_SCAN_ENTRY_CAP) return undefined;
+        const full = join(current, de.name);
+        if (de.isDirectory()) stack.push(full);
+        else if (de.isFile()) total += statSync(full).size;
+      }
     }
     return total;
   } catch {

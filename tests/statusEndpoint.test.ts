@@ -90,6 +90,75 @@ describe('status endpoint', () => {
     expect(await ep.url).toBeNull();
   });
 
+  it('completed items carry no workDirBytes and the request stays fast even with a large, repeatedly-shared directory (final review, Important 4)', async () => {
+    // Final whole-branch review, Important finding 4: decorateItem used to
+    // walk EVERY item's destinationPath, completed ones included, and a
+    // completed item's byte count is static -- re-walking it on every poll
+    // is pure waste that scales with the registry's cap (500), not the
+    // concurrency cap. Measured live: 500 completed items x 40 files cost
+    // 75ms on its own. This test uses fewer, larger directories (cheaper to
+    // set up) but the same shape: many completed items sharing one
+    // expensive-to-walk directory, so a regression to "decorate everything"
+    // shows up as a clear, generously-margined timing failure, not a flaky
+    // one.
+    const bigDir = mkdtempSync(join(tmpdir(), 'vem-status-completed-big-'));
+    for (let i = 0; i < 3000; i++) writeFileSync(join(bigDir, `f${i}.bin`), '');
+    const smallDir = mkdtempSync(join(tmpdir(), 'vem-status-running-small-'));
+    writeFileSync(join(smallDir, 'blob.bin'), Buffer.alloc(4096));
+
+    const reg = createStatusRegistry();
+    const completedCount = 60;
+    for (let i = 0; i < completedCount; i++) {
+      const id = reg.register({ url: `https://x/completed-${i}`, tool: 'analyze', destinationPath: bigDir });
+      reg.finish(id, 'ok');
+    }
+    const runningId = reg.register({ url: 'https://x/running', tool: 'analyze', destinationPath: smallDir });
+    void runningId;
+
+    const ep = startStatusEndpoint(reg, serverInfo(), 0); open.push(ep);
+    const url = await ep.url;
+
+    const t0 = performance.now();
+    const body = await (await fetch(url!)).json() as { items: Array<{ url: string; outcome?: unknown; workDirBytes?: number }> };
+    const elapsedMs = performance.now() - t0;
+
+    const completedItems = body.items.filter((i) => i.url.startsWith('https://x/completed-'));
+    expect(completedItems).toHaveLength(completedCount);
+    // Key absence, not falsiness (CLAUDE.md's own testing convention) --
+    // JSON.stringify already drops an undefined-valued property, so this is
+    // exactly what a real client sees on the wire.
+    for (const item of completedItems) expect('workDirBytes' in item).toBe(false);
+
+    const runningItem = body.items.find((i) => i.url === 'https://x/running')!;
+    expect(runningItem.outcome).toBeUndefined();
+    expect(runningItem.workDirBytes).toBe(4096);
+
+    // Generously margined (this branch's own established convention for
+    // timing assertions -- see tests/mcpProcessLifecycle.test.ts): the old,
+    // decorate-everything code walks bigDir sixty times over for a total
+    // cost in the hundreds of milliseconds to seconds; the fix walks it
+    // zero times.
+    expect(elapsedMs).toBeLessThan(500);
+  });
+
+  it('a RUNNING item past the workdir scan cap reports no workDirBytes -- omitted, not a wrong partial number (final review, Important 4)', async () => {
+    // "Bound the walk... if you cap, the payload must not silently imply
+    // completeness; consider omitting the field rather than reporting a
+    // partial number, since a wrong number is worse than an absent one
+    // under this project's rules" -- this item is still RUNNING (no
+    // outcome), so it is not skipped by the fix above; its own directory is
+    // what trips the entry cap.
+    const hugeDir = mkdtempSync(join(tmpdir(), 'vem-status-cap-'));
+    for (let i = 0; i < 2_500; i++) writeFileSync(join(hugeDir, `f${i}.bin`), '');
+    const reg = createStatusRegistry();
+    reg.register({ url: 'https://x/capped', tool: 'analyze', destinationPath: hugeDir });
+    const ep = startStatusEndpoint(reg, serverInfo(), 0); open.push(ep);
+    const url = await ep.url;
+    const body = await (await fetch(url!)).json() as { items: Array<{ url: string; workDirBytes?: number }> };
+    const item = body.items.find((i) => i.url === 'https://x/capped')!;
+    expect('workDirBytes' in item).toBe(false);
+  });
+
   it('statusPortFromEnv: unset->0, "0"->null, int->pin, garbage->0', () => {
     vi.stubEnv('VIDEO_EXTRACT_STATUS_PORT', '');
     expect(statusPortFromEnv()).toBe(0);

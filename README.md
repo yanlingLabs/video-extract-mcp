@@ -253,13 +253,13 @@ Both tools are task-capable. Called as a plain MCP tool call, every example abov
 
 ```
 https://youtu.be/AbC123xyz  resolving → downloading → transcribing  (45s in stage) · asrWorker pid 4122 · cpu 38.2s · workdir 892 MB
-https://youtu.be/DeF456uvw  resolving → downloading → transcribing → frames  (done 2m ago) · workdir 61 MB
+https://youtu.be/DeF456uvw  resolving → downloading → transcribing → frames  (done 2m ago)
 https://tiktok.com/@u/video/789  resolving → downloading  (372s in stage) · yt-dlp pid 4210 · cpu 12.4s · workdir 412 MB
 https://youtu.be/JkL012rst  queued
 server pid 4098 · up 14m · cap 4 · running 2 · queued 1
 ```
 
-Every field is exactly what it says: raw stage names in the order they fired, raw elapsed time, the child process actually doing the work and its cumulative CPU, and the working directory's byte count. `--watch` re-renders in place every second until you press Ctrl-C; `--json` prints the same, merged across every live server, as plain JSON with no ANSI control bytes, for scripting rather than reading; any positional argument filters the output to just that URL (repeatable). With no live servers, the human-readable render prints `no live video-extract servers`; `--json` prints `[]` instead — either way it exits 0.
+Every field is exactly what it says: raw stage names in the order they fired, raw elapsed time, the child process actually doing the work and its cumulative CPU, and — for an item still in progress only — the working directory's byte count so far; a completed item's directory is done changing, so its own line carries no `workdir` clause. `--watch` re-renders in place every second until you press Ctrl-C; `--json` prints the same, merged across every live server, as plain JSON with no ANSI control bytes, for scripting rather than reading; any positional argument filters the output to just that URL (repeatable). With no live servers, the human-readable render prints `no live video-extract servers`; `--json` prints `[]` instead — either way it exits 0.
 
 **The endpoint.** Every server also runs a localhost-only `GET /status` — bound to an ephemeral port by default — that the CLI above is itself just a client of. Its URL reaches an agent two ways, so nobody has to shell out to find it: the completed result's `statusUrl` field (`null` when the endpoint is disabled), and, for a task-mode caller that only has a handle so far, the handle reply's own `statusMessage`, prefixed `status: <url>` — with no such prefix at all, not a null, when the endpoint is disabled:
 
