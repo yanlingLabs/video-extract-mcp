@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import type { AnalyzeOptions } from './types.js';
 import { analyzeVideo } from './analyze.js';
 import { runStatusCli } from './status/statusCli.js';
+import { runCookiesCli } from './util/cookiesCli.js';
 import { isMainModule } from './util/entry.js';
 
 export function parseArgs(argv: string[]): { url: string; opts: AnalyzeOptions } {
@@ -71,6 +72,15 @@ async function main(): Promise<void> {
     process.exitCode = await runStatusCli(process.argv.slice(3), (l) => console.log(l));
     return;
   }
+  // Same subcommand treatment as 'status' above, and for the same reason: it
+  // is not a url/path positional and must not reach parseArgs. Synchronous
+  // and tiny (one file read at most), so the stdout-drain reasoning above
+  // does not apply -- but exitCode is still set rather than process.exit()d,
+  // to keep both subcommands exiting the same way.
+  if (process.argv[2] === 'cookies') {
+    process.exitCode = runCookiesCli(process.argv.slice(3), (l) => console.log(l));
+    return;
+  }
   const { url, opts } = parseArgs(process.argv.slice(2));
   if (!url) {
     console.error(
@@ -79,7 +89,10 @@ async function main(): Promise<void> {
       + '  --frames key   (default) the most informative frames, deduplicated\n'
       + '  --frames even  uniform sampling across the range; --max-frames sets density\n'
       + '  --frames none  no frames at all (transcript only)\n\n'
-      + '  one exact frame:  --start 7 --end 7 --frames even --max-frames 1 --no-transcript',
+      + '  one exact frame:  --start 7 --end 7 --frames even --max-frames 1 --no-transcript\n\n'
+      + 'subcommands:\n'
+      + '  video-extract status    what this machine\'s servers are working on\n'
+      + '  video-extract cookies   which domains your configured cookie jar covers',
     );
     process.exit(1);
   }

@@ -128,6 +128,19 @@ Three things worth knowing before you use it:
 
 A wrong path fails loudly rather than quietly fetching anonymously — an unreadable jar is a broken setup, not something to degrade past, and silently anonymous results would send you hunting the wrong bug.
 
+**Check what you actually configured**, without printing a single cookie value:
+
+```console
+$ video-extract cookies
+cookie jar: /Users/you/cookies.txt
+  .youtube.com      12 cookies  expires in 23 days
+  .instagram.com     4 cookies  expires in 3 days
+  .x.com             2 cookies  EXPIRED 5 days ago
+  3 domain(s), 18 cookies, 1 with expired cookies
+```
+
+It reports domains, counts and expiry — never names or values, so the output is safe to paste into an issue. It also names the mistake people actually make: an exporter set to JSON rather than the Netscape format produces a file that looks fine and contains nothing yt-dlp can read, which otherwise surfaces much later as a confusing `auth_required` on an unrelated video. Add `--json` for scripting.
+
 ## Three ways to use it
 
 The MCP server is the main surface, but the same engine is available two other ways.
