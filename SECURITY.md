@@ -58,6 +58,24 @@ VIDEO_EXTRACT_STATUS_PORT=0   # disables the endpoint entirely
 
 A report that the endpoint is reachable from **off** the host, or that it discloses something not listed above (credentials, cookie values, environment contents), is a real vulnerability. Local-user visibility of the fields listed above is documented behaviour.
 
+## Known dependency issues
+
+Stated here rather than left for you to discover from `npm audit`.
+
+**`sharp` / libvips (CVE-2026-33327, -33328, -35590, -35591 — high).** `@huggingface/transformers` pins `sharp: ^0.34.5`, which carries vulnerable libvips. This is **reachable**: the vision stage calls `RawImage.read()` on JPEG frames that ffmpeg extracted from a downloaded video, so image bytes derived from attacker-influenced media reach that decoder. This repository forces `sharp: ^0.35.3` via an npm `override`, which fixes it for anyone running from source and also removes a duplicate-libvips condition that libvips itself warns "may cause spurious casting failures and mysterious crashes".
+
+**That override does not reach you if you installed from npm.** npm applies `overrides` only from the root project, so a published package cannot fix its own transitive dependency for consumers — verified by installing the tarball into a clean project and observing the vulnerable copy still present. Until upstream widens that pin, protect yourself by adding the same override to *your* project:
+
+```json
+{ "overrides": { "sharp": "^0.35.3" } }
+```
+
+Verified compatible: the full suite passes and SigLIP embeddings are produced normally under 0.35.3.
+
+**`adm-zip` <0.6.0 (GHSA-xcpc-8h2w-3j85 — high).** Reached via `@huggingface/transformers` → `onnxruntime-node` → `adm-zip`. **No fix is available upstream**, and no override helps because there is no patched version to point at. Exposure here is limited: `adm-zip` is used by onnxruntime's own packaging, not by any path this project feeds attacker-controlled bytes into. It is tracked in `docs/follow-ups.md` and will be resolved when upstream ships a fix.
+
+Neither issue is a vulnerability *in this project's code*, and both are already known — no need to report them. A demonstration that either is exploitable **through this tool** in a way not described above is very much worth reporting.
+
 ## In scope
 
 - Escaping the argument-array boundary into shell execution
