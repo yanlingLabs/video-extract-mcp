@@ -3,6 +3,7 @@ import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AnalyzeOptions } from './types.js';
 import { analyzeVideo } from './analyze.js';
+import { runStatusCli } from './status/statusCli.js';
 import { isMainModule } from './util/entry.js';
 
 export function parseArgs(argv: string[]): { url: string; opts: AnalyzeOptions } {
@@ -42,6 +43,12 @@ export function parseArgs(argv: string[]): { url: string; opts: AnalyzeOptions }
 }
 
 async function main(): Promise<void> {
+  // Task 6 (status-channel plan): dispatched BEFORE parseArgs -- 'status' is
+  // a subcommand, not a url/path positional, and must never reach
+  // parseArgs's own positional-argument handling below.
+  if (process.argv[2] === 'status') {
+    process.exit(await runStatusCli(process.argv.slice(3), (l) => console.log(l)));
+  }
   const { url, opts } = parseArgs(process.argv.slice(2));
   if (!url) {
     console.error(
