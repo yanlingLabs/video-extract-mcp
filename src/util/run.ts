@@ -1,7 +1,22 @@
 import { spawn } from 'node:child_process';
+import { basename } from 'node:path';
 import { statusCallbacks } from '../status/context.js';
 
-export interface RunOpts { cwd?: string; timeoutMs?: number; env?: NodeJS.ProcessEnv; }
+export interface RunOpts {
+  cwd?: string;
+  timeoutMs?: number;
+  env?: NodeJS.ProcessEnv;
+  /** Final whole-branch review, Minor finding 5: what onSpawn reports as the
+   *  child's command, when it differs from `cmd` itself -- e.g.
+   *  src/transcript/asr.ts and src/vision/embed.ts both spawn via
+   *  `run(process.execPath, [worker, ...])`, so the ACTUAL executable is
+   *  the node binary, not a name that identifies which worker is running.
+   *  Reported verbatim, not basenamed -- a caller-supplied label is already
+   *  the exact status-facing name it wants, unlike `cmd` (see basename()
+   *  below), which is a real path/PATH-resolved binary name that only
+   *  needs its directory component stripped. */
+  label?: string;
+}
 
 export async function run(
   cmd: string, args: string[], opts: RunOpts = {},
@@ -19,7 +34,14 @@ export async function run(
     // one place rather than being duplicated at each reader.
     const status = statusCallbacks();
     if (status?.onSpawn && typeof child.pid === 'number') {
-      status.onSpawn(child.pid, cmd);
+      // Final whole-branch review, Minor finding 5: basename(cmd) as the
+      // general fallback -- every OTHER run() call site already passes a
+      // bare, PATH-resolved command name (yt-dlp, ffmpeg, ffprobe,
+      // tesseract), for which basename() is a no-op; a caller-supplied
+      // label (currently: asrWorker, embedWorker) overrides it with a
+      // status-facing name that identifies the worker script, not the
+      // interpreter running it.
+      status.onSpawn(child.pid, opts.label ?? basename(cmd));
     }
     // A spawn that never gets a pid (ENOENT/EACCES class) makes Node fire
     // BOTH 'error' and 'close' -- confirmed, not hypothetical. Without a

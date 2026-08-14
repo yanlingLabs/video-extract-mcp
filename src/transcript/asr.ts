@@ -23,7 +23,11 @@ export async function transcribeAudio(
   if (opts.preferredLanguage) args.push(opts.preferredLanguage);
 
   // Separate process so model memory is fully released on exit (spec §4).
-  const r = await run(process.execPath, args, { timeoutMs: 30 * 60_000 });
+  // label: final whole-branch review, Minor finding 5 -- reports 'asrWorker'
+  // via /status instead of the node binary path (`run()`'s own `cmd` here
+  // is process.execPath, the interpreter, not a name that identifies which
+  // worker is running).
+  const r = await run(process.execPath, args, { timeoutMs: 30 * 60_000, label: 'asrWorker' });
   if (r.code !== 0) throw new Error(`ASR worker failed: ${r.stderr.slice(-400)}`);
   return JSON.parse(r.stdout) as Transcript;
 }

@@ -26,7 +26,9 @@ export async function embedImages(paths: string[]): Promise<number[][]> {
     // Separate process so the SigLIP model's memory is fully released on exit,
     // the same staged-worker strategy as src/transcript/asr.ts (spec §4): this
     // file must never import @huggingface/transformers directly.
-    const r = await run(process.execPath, [worker, listFile], { timeoutMs: 20 * 60_000 });
+    // label: final whole-branch review, Minor finding 5 -- see asr.ts's
+    // identical comment.
+    const r = await run(process.execPath, [worker, listFile], { timeoutMs: 20 * 60_000, label: 'embedWorker' });
     if (r.code !== 0) throw new Error(`embed worker failed: ${r.stderr.slice(-400)}`);
     return JSON.parse(r.stdout) as number[][];
   } finally {
