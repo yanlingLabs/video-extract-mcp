@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { createRequire } from 'node:module';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { InMemoryTaskStore } from '@modelcontextprotocol/sdk/experimental/tasks/stores/in-memory.js';
@@ -373,15 +374,29 @@ function runAnalyzeExecution(
   });
 }
 
-// Task 5: the version string stamped into the status endpoint's own
-// `StatusServerInfo` (below) and the discovery registry's `ServerEntry` --
-// factored into one constant, rather than independent '0.3.0' literals,
-// specifically so a future edit to one cannot silently drift from the
-// other; the two describe the exact same server. Task 7 folds McpServer's
-// own `serverInfo.version` (below) into the same constant too, closing the
-// skew Task 4's report flagged (the endpoint read '0.3.0' while McpServer
-// still read '0.2.0') -- all three now name one server, one version.
-const STATUS_VERSION = '0.3.0';
+// The version string stamped into the status endpoint's own
+// `StatusServerInfo` (below), the discovery registry's `ServerEntry`, and
+// McpServer's own `serverInfo.version` -- one constant for all three,
+// because the three describe the exact same server.
+//
+// READ FROM package.json, not written here. This constant has now drifted
+// twice: first as three independent literals (the endpoint reporting
+// '0.3.0' while McpServer still said '0.2.0'), then again at 0.4.0, when
+// factoring them into one hand-maintained literal turned out to fix only
+// half the problem -- the three agreed with each other and all three lied
+// about the package. A release bumps package.json; anything that must match
+// it has to derive from it, or it is one forgotten edit away from a server
+// that misreports itself. The failure is quiet and the value is one an
+// operator reads to answer "what is actually running?", which is exactly
+// the kind of claim this project refuses to fabricate.
+//
+// createRequire rather than a JSON import: resolved relative to this
+// module, so it works from dist/ (the shipped path) and from src/ alike,
+// and needs no resolveJsonModule or import-attributes syntax. package.json
+// is always present in a published tarball, npm includes it unconditionally.
+const STATUS_VERSION = (
+  createRequire(import.meta.url)('../package.json') as { version: string }
+).version;
 
 // Task 5: cross-session discovery (src/status/discovery.ts). Installed at
 // most ONCE per OS process no matter how many times buildServer() runs --

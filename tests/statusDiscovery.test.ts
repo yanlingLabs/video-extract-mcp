@@ -339,7 +339,15 @@ describe('end-to-end via a real spawned server (src/mcp.ts wiring)', () => {
       }
       expect(registered).toBeDefined();
       expect(registered!.port).toBeGreaterThan(0);
-      expect(registered!.version).toBe('0.3.0');
+      // Against package.json, never a literal. This assertion USED to read
+      // toBe('0.3.0') and passed happily at 0.4.0 -- both it and the server
+      // carried their own stale copy, so the test agreed with the bug
+      // instead of catching it. A test that hardcodes a version drifts in
+      // exactly the same way as the constant it is meant to guard.
+      const pkgVersion = (JSON.parse(
+        readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
+      ) as { version: string }).version;
+      expect(registered!.version).toBe(pkgVersion);
 
       // SIGTERM, deliberately, not stdin EOF: this is the signal-handler
       // chain this task actually adds (the SIGTERM listener calls
