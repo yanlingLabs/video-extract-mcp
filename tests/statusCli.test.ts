@@ -80,6 +80,28 @@ describe('video-extract status CLI', () => {
     expect(lines.join('\n').toLowerCase()).not.toMatch(/stale|stuck|healthy|percent/);
   });
 
+  it('the footer renders evicted when non-zero -- past the registry cap is not a silent truncation (final review, Minor 8)', async () => {
+    // spec §3: eviction must not be silent. The registry itself already
+    // reports evicted honestly (tests/statusRegistry.test.ts); this pins
+    // that the CLI's own human render actually surfaces it, not just the
+    // JSON payload.
+    freshCacheDir();
+    const reg = createStatusRegistry(1); // cap 1 -- the second finish() evicts the first
+    const itemDir = mkdtempSync(join(tmpdir(), 'vem-cli-evicted-'));
+    const a = reg.register({ url: 'https://x/evicted-a', tool: 'analyze', destinationPath: itemDir });
+    reg.finish(a, 'ok');
+    const b = reg.register({ url: 'https://x/evicted-b', tool: 'analyze', destinationPath: itemDir });
+    reg.finish(b, 'ok'); // evicts 'a' -- registry.evicted becomes 1
+    open.push(await setupLiveServer(reg));
+
+    const lines: string[] = [];
+    await runStatusCli([], (l) => lines.push(l));
+
+    const footerLine = lines.find((l) => l.startsWith('server pid'));
+    expect(footerLine).toBeDefined();
+    expect(footerLine).toMatch(/^server pid \d+ · up \d+m · cap \d+ · running \d+ · queued \d+ · evicted 1$/);
+  });
+
   it('a live child and known workdir bytes both render their optional clauses', async () => {
     freshCacheDir();
     const reg = createStatusRegistry();

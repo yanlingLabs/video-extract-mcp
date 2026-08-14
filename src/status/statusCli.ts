@@ -121,10 +121,17 @@ function renderItem(item: DecoratedItem, now: number): string {
   return line;
 }
 
-function renderFooter(server: StatusPayload['server']): string {
+/** Final whole-branch review, Minor finding 8: `evicted` is appended ONLY
+ *  when non-zero -- spec §3 requires eviction not be silent, but the
+ *  common case (a registry nowhere near its 500-item cap) must render
+ *  byte-identically to before this fix, so `· evicted N` is additive, not
+ *  a permanent fifth clause. */
+function renderFooter(server: StatusPayload['server'], evicted: number): string {
   const upMinutes = Math.max(0, Math.floor(server.uptimeSeconds / 60));
-  return `server pid ${server.pid} · up ${upMinutes}m · cap ${server.concurrencyCap} `
+  let line = `server pid ${server.pid} · up ${upMinutes}m · cap ${server.concurrencyCap} `
     + `· running ${server.running} · queued ${server.queued}`;
+  if (evicted > 0) line += ` · evicted ${evicted}`;
+  return line;
 }
 
 async function renderOnce(urls: string[], json: boolean, out: (line: string) => void): Promise<void> {
@@ -152,7 +159,7 @@ async function renderOnce(urls: string[], json: boolean, out: (line: string) => 
   const now = Date.now();
   for (const payload of payloads) {
     for (const item of payload.items) out(renderItem(item, now));
-    out(renderFooter(payload.server));
+    out(renderFooter(payload.server, payload.evicted));
   }
 }
 
