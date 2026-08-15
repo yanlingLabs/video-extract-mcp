@@ -53,7 +53,7 @@ codex mcp add video-extract -- npx -y @yanlinglabs/video-extract-mcp@latest
 
 **Another agent?** Point it at **[SKILL.md](https://github.com/yanlingLabs/video-extract-mcp/blob/main/SKILL.md)** and it can install itself.
 
-**The `@latest` is load-bearing.** Without it npx pins to whatever version it first cached and never moves again — measured: with 0.7.0 published, a bare-spec invocation still served the 0.4.1 it had cached, and went on doing so even after a newer copy was already present in the npx cache. `@latest` re-resolves on every cold start.
+**Keep the `@latest`** — without it npx pins to the first version it cached and never updates.
 
 **Option B — installed globally.** Starts faster and gives you the `video-extract` status CLI as a real command.
 
@@ -225,20 +225,6 @@ Note that both the CLI and library paths run the **compiled** output. The speech
 
 ## The two tools
 
-> **Breaking change in 0.2.0:** both tools' call shape changed. 0.1.x took a
-> single top-level `url` (`resolve_video`) or `pathOrUrl` (`analyze_video`)
-> per call. 0.2.0 replaces that with a `videos` array — one entry per video,
-> so a single call can now process a batch — plus the required
-> `destinationPath` that used to sit alongside it. A 0.1.x call needs its
-> arguments reshaped: `{ url: "..." }` becomes `{ destinationPath: "...",
-> videos: [{ url: "..." }] }` (`resolve_video`), same idea for
-> `analyze_video`'s `pathOrUrl`. The **on-disk output layout is unaffected**
-> at `videos.length === 1` — a single-item call still writes exactly where
-> 0.1.x did, byte-for-byte (`manifest.json` etc. flat in `destinationPath`,
-> no `video-1/` subdirectory) — but the **JSON reply shape** changed too:
-> every reply is now `{ videos: [...] }`, one entry per item, even for a
-> single video. See the current schemas just below for the exact shape.
-
 The surface is deliberately small. Earlier versions had four tools and the descriptions had to shout about which ones took URLs versus local paths — a sign the design was wrong, not that the warning needed to be louder.
 
 ### `resolve_video` — look it up, optionally fetch it
@@ -301,7 +287,7 @@ analyze_video({
 })
 ```
 
-One video — the common case, written flat into `destinationPath`, byte-identical to a 0.1.x call:
+One video — the common case, written flat into `destinationPath`:
 
 ```ts
 analyze_video({
@@ -334,7 +320,7 @@ Frame selection is bounded to `start`–`end` in both modes, and the transcript 
 
 ## Background tasks
 
-Both tools are task-capable. Called as a plain MCP tool call, every example above behaves exactly as shown, on every client, whether or not it knows what a task is — but plain calls now carry a small latency floor, honestly: both tools are registered so that a client marking a call as a **task** gets a handle back immediately instead of blocking, and a *plain* call is served by the MCP SDK's own automatic task-polling bridge underneath, which waits one poll interval (~150ms) before its first status check no matter how fast the work actually finishes. 0.1.x had no such floor. ~150ms is not noticeable next to a real download or transcription, but it is not zero, and a caller timing something trivial (a cheap metadata-only `resolve_video`, say) will see it. Called as a **task** — an MCP client marks the call that way, using the (experimental) MCP tasks capability — the tool returns a handle immediately instead of blocking, and pushes progress while the work runs. This matters most for `analyze_video`, where a real video can take minutes.
+Both tools are task-capable. Called as a plain MCP tool call, every example above behaves exactly as shown, on every client, whether or not it knows what a task is — with a small latency floor of about 150ms, which is invisible next to a real download but not zero on a cheap metadata-only call. Called as a **task** — an MCP client marks the call that way, using the (experimental) MCP tasks capability — the tool returns a handle immediately instead of blocking, and pushes progress while the work runs. This matters most for `analyze_video`, where a real video can take minutes.
 
 - **Status messages** describe where the batch is: `"video 2/3: transcribing"` for an item currently running, `"queued, 1 ahead"` for an item waiting on a concurrency slot. Status is visible through client polling (roughly once every 150ms), so it is a snapshot at each poll, not a live per-stage feed — a stage that starts and finishes between two polls can be coalesced away.
 - **Cancellation is honest, not performative — and it is per task, not per item.** A task none of whose items has started executing cancels fully: nothing runs, nothing is written. The moment any item's execution begins, the whole task refuses cancellation — identically for both tools — with a message saying it will finish and deliver its result rather than silently disappearing; a five-video batch with one item already running refuses even while four are still queued. `resolve_video` never queues at all, so a cancel on a live `resolve_video` task always hits that refused case.
@@ -370,11 +356,11 @@ curl 'http://127.0.0.1:PORT/status?url=https://youtu.be/AbC123xyz'   # repeatabl
 
 **Stopping something.** There is no `cancel` subcommand for this channel — stopping is a plain `kill` against a pid the status output just showed you, and the two targets you can aim it at behave differently, on purpose: killing an item's child process makes that item fail honestly while the batch continues and the task itself still completes; killing the server's own pid stops everything, and whatever was already written to `destinationPath` survives, exactly as if the server had exited normally.
 
-**Half-downloaded files are cleaned up.** A download in flight is written under a `.part` name and renamed only once every byte has arrived, so a killed process can never leave something that *looks* like a finished video. A direct or WeChat download that fails removes its own bytes immediately. A failed `yt-dlp` download deliberately does not: yt-dlp picks its own filenames, so two calls into one directory produce the same names, and nothing can tell abandoned bytes from a concurrent download's live ones. Those are collected instead by the next download into that directory, which removes the leftovers it recognises once they are more than six hours old — old enough that nothing still running could own them. The same sweep is what resolves the crash and reboot cases, where no code of ours was left to clean up.
+**Half-downloaded files are cleaned up.** A download in flight is written under a `.part` name and renamed only once every byte has arrived, so a killed process can never leave something that *looks* like a finished video. Leftovers from a crash, a kill or a reboot are collected by the next call into that directory.
 
-Only files this tool itself created are ever removed — partial downloads matched on the `source.*` names it downloads under, and its own `.work-<pid>-<n>` scratch directories. Never a manifest, transcript, frame or completed video; never a `.part` file left by your browser or your own `yt-dlp` run; and never a scratch directory whose owning process is still alive, which is what makes two concurrent calls into one directory safe.
+Only files this tool itself created are ever removed — its own partial downloads and scratch directories. Never a manifest, transcript, frame or completed video, and never a `.part` file left by your browser or your own `yt-dlp` run.
 
-**You get results, not scratch.** The pipeline produces far more than it returns — a 40-frame request extracts every scene-boundary candidate before filtering, and `frames: "key"` also writes a normalized re-encode alongside the download. One real run produced 258 JPEGs and 390 MB to deliver 40 frames and a transcript. All of that now happens in a scratch subdirectory that is deleted when the item finishes; `destinationPath` receives the manifest, the transcript, exactly the frames the reply names, and the single video file `videoPath` points at.
+**You get results, not scratch.** The pipeline produces far more than it returns — every scene-boundary candidate before filtering, and a normalized re-encode in `frames: "key"` mode. That work happens in a scratch subdirectory which is deleted when the item finishes, so `destinationPath` receives the manifest, the transcript, exactly the frames the reply names, and the one video file `videoPath` points at.
 
 A server that exits takes its in-memory status history with it — there is no cross-restart persistence, by design (see `docs/follow-ups.md`). Nothing about that loses what matters: the files at `destinationPath` are the durable record either way.
 
@@ -409,7 +395,7 @@ WeChat Channels (视频号) support is worth calling out: it resolves **headless
 
 **Cheap requests are cheap.** A single-frame request skips scene detection, quality filtering, OCR, embeddings, transcription, *and* the video re-encode. Measured at ~240ms whether the source is 6 seconds or 5 minutes long.
 
-**A transcript-only request doesn't download the video.** Ask for `frames: "none"` on a video that has captions and the media is never fetched at all — the captions answer the question, and nothing else in the pipeline needs the file. Measured on a 27-minute YouTube video: 888 KB instead of 285 MB. The reply simply omits `videoPath` in that case, because there is no local file to point at. Add a `start`/`end` range and it downloads as before — a range makes the clip's time base load-bearing, so that case is deliberately left alone.
+**A transcript-only request doesn't download the video.** Ask for `frames: "none"` on a video that has captions and the media is never fetched at all — the captions answer the question, and nothing else in the pipeline needs the file. Measured on a 27-minute YouTube video: 888 KB instead of 285 MB. The reply simply omits `videoPath` in that case, because there is no local file to point at. Add a `start`/`end` range and it downloads as before.
 
 ## Status
 
