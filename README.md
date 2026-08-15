@@ -51,7 +51,7 @@ Codex:
 codex mcp add video-extract -- npx -y @yanlinglabs/video-extract-mcp@latest
 ```
 
-**Using something else?** Point your agent at **[SKILL.md](https://github.com/yanlingLabs/video-extract-mcp/blob/main/SKILL.md)** and it can install this itself. That file carries verified recipes for Gemini CLI, Grok CLI and opencode, the JSON block for clients configured by file, and — more useful than any single command — the three values (`command`, `args`, `env`) that every MCP client needs however it spells them. `mcp add` is a common shape across CLIs but *not* a standard: the flags differ, and a command copied between them can fail or silently mis-parse.
+**Another agent?** Point it at **[SKILL.md](https://github.com/yanlingLabs/video-extract-mcp/blob/main/SKILL.md)** and it can install itself.
 
 **The `@latest` is load-bearing.** Without it npx pins to whatever version it first cached and never moves again — measured: with 0.7.0 published, a bare-spec invocation still served the 0.4.1 it had cached, and went on doing so even after a newer copy was already present in the npx cache. `@latest` re-resolves on every cold start.
 
