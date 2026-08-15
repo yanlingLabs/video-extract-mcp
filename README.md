@@ -39,11 +39,15 @@ Then point your MCP client at the package. There are two ways, and they differ i
 
 **Option A — `npx`, nothing installed.** Simplest, and it picks up new releases on its own.
 
-```bash
-# Claude Code
-claude mcp add --scope user video-extract -- npx -y @yanlinglabs/video-extract-mcp@latest
+Claude Code:
 
-# Codex
+```bash
+claude mcp add --scope user video-extract -- npx -y @yanlinglabs/video-extract-mcp@latest
+```
+
+Codex:
+
+```bash
 codex mcp add video-extract -- npx -y @yanlinglabs/video-extract-mcp@latest
 ```
 
@@ -55,7 +59,18 @@ codex mcp add video-extract -- npx -y @yanlinglabs/video-extract-mcp@latest
 
 ```bash
 npm install -g @yanlinglabs/video-extract-mcp
+```
+
+Then register it — Claude Code:
+
+```bash
 claude mcp add --scope user video-extract -- video-extract-mcp
+```
+
+Codex:
+
+```bash
+codex mcp add video-extract -- video-extract-mcp
 ```
 
 |  | `npx` (A) | global install (B) |
@@ -128,10 +143,19 @@ export VIDEO_EXTRACT_COOKIES_FROM_BROWSER=auto       # recommended: borrow only 
 
 The other two modes are eager — cookies on every request:
 
+Read a browser's store directly (`chrome`, `safari`, `edge`, `brave`, …):
+
 ```bash
-export VIDEO_EXTRACT_COOKIES_FROM_BROWSER=firefox    # chrome, safari, edge, brave, ...
-export VIDEO_EXTRACT_COOKIES_FILE=~/cookies.txt      # a Netscape-format jar
+export VIDEO_EXTRACT_COOKIES_FROM_BROWSER=firefox
 ```
+
+Or point at an exported Netscape-format jar:
+
+```bash
+export VIDEO_EXTRACT_COOKIES_FILE=~/cookies.txt
+```
+
+Set both and the file wins — they are alternatives, not a pair.
 
 **Expect an OS keychain prompt.** Every Chrome-family browser encrypts its cookie store against the system keyring, so the first read shows a dialog you must approve — on macOS, "Chrome Safe Storage". Firefox does not; its store is plain SQLite, which is why `auto` prefers it when both are present. If you set nothing at all and a request is refused, the reply tells you the command to enable this and warns about that prompt, rather than leaving you to discover it.
 
