@@ -18,6 +18,8 @@ import { attachTranscript } from './align.js';
 import { parseVtt, chooseCaptionTier, clampSegmentsToRange } from './transcript/captions.js';
 import { chooseAsrEngine } from './transcript/routing.js';
 import { transcribeAudio } from './transcript/asr.js';
+import { ensureAsrModels } from './transcript/fetchModels.js';
+import { resolveModelsDir } from './util/models.js';
 import { buildManifest } from './manifest.js';
 import { PeakRssTracker } from './util/rss.js';
 
@@ -305,7 +307,17 @@ async function analyzeResolved(
         // build per task-11-report.md), so wiring it through is what lets a
         // caller-declared language reach transcript.language honestly instead of
         // silently downgrading to 'auto'.
-        transcript = await transcribeAudio(audio, { engine, preferredLanguage: opts.preferredLanguage }).catch((e: unknown) => {
+        // Fetch the speech models if this machine has not got them yet.
+        // The LAST possible moment on purpose: a captioned video, or
+        // transcript:false, must never trigger a ~1.5GB download, and only
+        // here is it certain that local recognition is genuinely the answer.
+        // Only the engine actually chosen is fetched (1.3GB Whisper versus
+        // 233MB SenseVoice). Failure falls into the same catch below and
+        // degrades to a recorded warning, exactly as a missing model did
+        // before this existed.
+        transcript = await ensureAsrModels(engine, resolveModelsDir())
+          .then(() => transcribeAudio(audio!, { engine, preferredLanguage: opts.preferredLanguage }))
+          .catch((e: unknown) => {
           // Same silent-degrade class as OCR/embeddings below: a null
           // transcript is otherwise indistinguishable from "no speech found".
           warnings.push(`asr failed: ${e instanceof Error ? e.message : String(e)}`);

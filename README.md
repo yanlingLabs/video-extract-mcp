@@ -10,7 +10,7 @@ Built for AI agents. Two MCP tools, no cloud, no API keys, no Python.
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%E2%89%A526-brightgreen.svg)](https://nodejs.org)
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-blue.svg)](https://www.typescriptlang.org/)
-[![Tests](https://img.shields.io/badge/tests-584%20passing-success.svg)](#testing)
+[![Tests](https://img.shields.io/badge/tests-669%20passing-success.svg)](#testing)
 [![MCP](https://img.shields.io/badge/MCP-server-orange.svg)](https://modelcontextprotocol.io)
 
 ---
@@ -99,7 +99,7 @@ Or in any MCP client's config — `"command": "npx", "args": ["-y", "@yanlinglab
 
 That is enough for any video that has captions — which, thanks to the caption-first transcript policy, is most of them. The vision model downloads itself on first use.
 
-**Speech models are only needed for videos with no captions at all.** They are ~1.5 GB, so they are not bundled. Fetch them when you want that fallback:
+**Speech models are only needed for videos with no captions at all**, and they are fetched automatically the first time one is. Only the engine that video needs is downloaded — 233 MB for the Chinese/Japanese/Korean model, 1.3 GB for Whisper — into `~/.cache/video-extract-mcp/models`. Set `VIDEO_EXTRACT_AUTO_FETCH_MODELS=0` to keep it manual, or pre-fetch them yourself:
 
 ```bash
 npx -y @yanlinglabs/video-extract-mcp --help   # installs the package
@@ -107,7 +107,7 @@ curl -fsSL https://raw.githubusercontent.com/yanlingLabs/video-extract-mcp/main/
   | bash -s -- ~/.cache/video-extract-mcp/models
 ```
 
-`~/.cache/video-extract-mcp/models` is where the tool looks by default. Override with `VIDEO_EXTRACT_MODELS_DIR`. Without them, an uncaptioned video still returns frames and records a warning explaining the transcript is missing — it degrades rather than fails.
+`~/.cache/video-extract-mcp/models` is where the tool looks by default. Override with `VIDEO_EXTRACT_MODELS_DIR`. If the fetch is disabled or fails, an uncaptioned video still returns frames and records a warning explaining why the transcript is missing — it degrades rather than fails.
 
 ### From source (contributors)
 
@@ -124,6 +124,7 @@ npm run preflight            # verifies ffmpeg / ffprobe / yt-dlp / tesseract
 | Variable | Purpose |
 |---|---|
 | `VIDEO_EXTRACT_MODELS_DIR` | Where speech models live. Defaults to `./models` when that exists, else `~/.cache/video-extract-mcp/models`. |
+| `VIDEO_EXTRACT_AUTO_FETCH_MODELS` | Set `0` to stop the speech models being downloaded on demand. They are then your job (`scripts/fetch-models.sh`), and an uncaptioned video degrades with a warning saying so. |
 | `VIDEO_EXTRACT_COOKIES_FILE` | Path to a Netscape-format cookie jar, used for **every** yt-dlp source at once — YouTube, Instagram, Facebook, X, TikTok, Twitch and the rest. See [Authenticated sources](#authenticated-sources). |
 | `VIDEO_EXTRACT_COOKIES_FROM_BROWSER` | Load cookies from a local browser instead: `chrome`, `firefox`, `safari`, `edge`, `brave`, `chromium`, `opera`, `vivaldi`, `whale`, optionally `browser:profile`. Ignored when `VIDEO_EXTRACT_COOKIES_FILE` is set. |
 | `VIDEO_EXTRACT_WECHAT_COOKIE` | A yuanbao session cookie, required only for WeChat Channels links. Separate from the above by design — a different protocol with its own credential. |

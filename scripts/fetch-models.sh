@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# Optional pre-fetch. Since 0.10.0 the models are downloaded automatically the
+# first time a video needs local transcription, and only the engine that video
+# uses. Run this to fetch both ahead of time, or when
+# VIDEO_EXTRACT_AUTO_FETCH_MODELS=0 has turned the automatic path off.
 set -euo pipefail
 BASE="https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models"
 DIR="${1:-models}"
