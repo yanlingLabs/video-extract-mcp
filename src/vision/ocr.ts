@@ -1,3 +1,4 @@
+import { statSync } from 'node:fs';
 import sharp from 'sharp';
 import { run } from '../util/run.js';
 import type { Candidate } from '../types.js';
@@ -158,6 +159,18 @@ export async function ocrFrame(imagePath: string, langs = 'eng') {
   return { content, subtitle };
 }
 
+/**
+ * What the file tesseract was pointed at actually looked like, described
+ * without throwing -- a diagnostic must never become the failure it reports.
+ */
+function describeInput(p: string): string {
+  try {
+    return `present, ${statSync(p).size} bytes`;
+  } catch {
+    return 'MISSING when tesseract ran';
+  }
+}
+
 async function ocrBuffer(buf: Buffer, langs: string): Promise<string> {
   const { writeFile, unlink } = await import('node:fs/promises');
   const { tmpdir } = await import('node:os');
@@ -172,7 +185,27 @@ async function ocrBuffer(buf: Buffer, langs: string): Promise<string> {
     // still returns '' via a clean zero exit, so "no text" stays honest and
     // a dead tesseract no longer masquerades as it.
     const { stdout, stderr, code } = await run('tesseract', [p, 'stdout', '-l', langs], { timeoutMs: 30_000 });
-    if (code !== 0) throw new Error(`tesseract exited ${code}: ${stderr.slice(-200).trim()}`);
+    if (code !== 0) {
+      // Say what the input WAS, not just what tesseract said about it.
+      //
+      // A real run lost all 459 frames to this, and the message made the
+      // cause undiagnosable: leptonica reports "image file not found", then
+      // retries using the file's own magic bytes as the filename, so it
+      // prints `image file not found: \x89PNG` -- which reads as though this
+      // code passed image data where a path belonged. It does not. Hours went
+      // into a hypothesis (a space in the temp path) that a controlled test
+      // later disproved outright.
+      //
+      // The one fact that would have settled it is whether the file was still
+      // there when tesseract looked, so it is now recorded AFTER the call:
+      // present with a plausible size means the problem is tesseract's
+      // reading of it; absent or empty means it was never written, or
+      // something removed it mid-call, and those are different bugs.
+      throw new Error(
+        `tesseract exited ${code} [input: ${p}, ${describeInput(p)}, langs: ${langs}]: `
+        + stderr.slice(-200).trim(),
+      );
+    }
     return stdout.replace(/\s+/g, ' ').trim();
   } finally { await unlink(p).catch(() => {}); }
 }
