@@ -13,7 +13,7 @@ Every MCP client needs the same three things. However your client spells it, thi
 | args | `-y`, `@yanlinglabs/video-extract-mcp@latest` |
 | env *(optional)* | `VIDEO_EXTRACT_COOKIES_FROM_BROWSER=auto` |
 
-**`@latest` is load-bearing.** Without it npx pins to the first version it cached and never updates again — measured: a bare spec kept serving 0.4.1 with 0.7.0 published, and went on doing so even after a newer copy was already in the npx cache.
+**`@latest` is load-bearing.** Without it npx pins to the first version it cached and never updates again.
 
 Prerequisites, which cannot come from npm: `ffmpeg`, `yt-dlp`, `tesseract` (`brew install ffmpeg yt-dlp tesseract tesseract-lang`, or your platform's package manager). Node >= 26.
 
@@ -83,6 +83,10 @@ If your client takes a JSON config (the common case for editor extensions), this
 Some clients name that key `servers` or `mcp` instead of `mcpServers`, and some want the block inside a larger settings file — check your client's own docs for the wrapper. The inner three fields are the same everywhere.
 
 **If your CLI is not listed above, do not guess its flags.** Run `<your-cli> mcp add --help` and map the three values from the first table onto whatever it asks for. Reporting what worked is a genuinely useful contribution — see [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## What it gives you
+
+Three tools: `resolve_video` (metadata, optionally the file), `analyze_video` (transcript plus important keyframes), and `get_status` (collect a result if your client timed the call out — the work finishes regardless).
 
 ## Verify it worked
 

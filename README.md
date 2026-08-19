@@ -224,7 +224,9 @@ console.log(manifest.frames.map((f) => f.image));
 
 Note that both the CLI and library paths run the **compiled** output. The speech and vision models run in separate worker processes resolved next to the compiled module, so running the TypeScript sources directly leaves those workers unresolvable — they degrade to a warning rather than an error, which is quiet enough to miss. `npm run cli` builds first for this reason.
 
-## The two tools
+## The tools
+
+Two that do the work, plus one lookup.
 
 The surface is deliberately small. Earlier versions had four tools and the descriptions had to shout about which ones took URLs versus local paths — a sign the design was wrong, not that the warning needed to be louder.
 
@@ -319,6 +321,16 @@ analyze_video({
 
 Frame selection is bounded to `start`–`end` in both modes, and the transcript covers only the selected range.
 
+### `get_status` — collect a result after a timeout
+
+```json
+get_status({
+  videos: [string, ...]        // required — the same URLs or paths you passed before
+})
+```
+
+Returns one entry per video: `finished` with the result the original call would have given you, `running` with the stages it has reached, or `unknown`. Only reach for it when a call actually timed out — see below.
+
 ## Recovering a call your client stopped waiting for
 
 Some clients cap how long they will wait for a tool call. When that happens the work **carries on** — the server keeps going and writes its files; only the client stops listening. To collect the result afterwards, ask about the video:
@@ -341,6 +353,7 @@ Both tools are task-capable. Called as a plain MCP tool call, every example abov
 - **Cancellation is honest, not performative — and it is per task, not per item.** A task none of whose items has started executing cancels fully: nothing runs, nothing is written. The moment any item's execution begins, the whole task refuses cancellation — identically for both tools — with a message saying it will finish and deliver its result rather than silently disappearing; a five-video batch with one item already running refuses even while four are still queued. `resolve_video` never queues at all, so a cancel on a live `resolve_video` task always hits that refused case.
 - **Handles are in-memory only.** They expire `VIDEO_EXTRACT_TASK_TTL_MS` after the task completes (default 30 minutes) and die with the server process regardless — the server process itself exits promptly once its stdin closes, even with handles still pending. Files already written to `destinationPath` are unaffected either way — the tool never deletes them, expired handle or not.
 - **Plain calls work everywhere, with that one caveat.** Task support requires an MCP client that implements the experimental tasks capability; without one, both tools behave exactly as documented above, synchronously, modulo the ~150ms floor above.
+- **Some clients cannot use tasks at all** — the Claude desktop app is one, and says so when asked. There the flow is a plain call that may hit the client's own time limit; the server keeps working regardless, and [`get_status`](#get_status--collect-a-result-after-a-timeout) collects the result afterwards.
 
 ## Watching progress
 
