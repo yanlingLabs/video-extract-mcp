@@ -173,14 +173,18 @@ ffmpeg is passed an explicit `-f` because it infers the muxer from the
 output extension — a `.part` name has none, which silently broke every HLS
 URL in one draft.
 
-**A caller-supplied `callId` is what makes a lost reply recoverable.** Some clients
-cap tool-call duration and send `notifications/cancelled` while the server keeps
-working -- observed in a real client's own MCP log. `get_status` returns the stored
-reply for that id. The id must come from the CALLER: a server-minted one would be
-returned in the reply, which is the thing that was lost. `src/agent/callStore.ts`
-holds replies verbatim and is deliberately SEPARATE from `src/status/registry.ts`,
-whose observables-never-verdicts rule stays intact by not being asked to store
-results.
+**`get_status` is keyed on the VIDEO, never on a handle the caller had to mint.**
+Some clients cap tool-call duration and send `notifications/cancelled` while the
+server keeps working -- observed in a real client's own MCP log. An earlier draft
+had the caller invent a `callId`; it worked, but only for a caller who had thought
+to supply one BEFORE discovering it would be needed, and recovery matters exactly
+when nobody prepared. The url/path is required on every call, so it cannot be
+missing. Matched exactly -- no youtu.be/youtube.com equivalence, no query-parameter
+stripping -- because answering about the wrong video is worse than answering
+"unknown". `src/agent/resultStore.ts` holds finished results verbatim and is
+deliberately SEPARATE from `src/status/registry.ts`, which already tracks running
+items by url and whose observables-never-verdicts rule stays intact by not being
+asked to store results.
 
 **`src/types.ts` is the single source of truth** for shared types.
 

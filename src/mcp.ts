@@ -9,7 +9,7 @@ import { analyzeVideoTool, itemDir, type AnalyzeToolArgs, type AnalyzeToolResult
 import { resolveVideoTool, type ResolveToolArgs } from './agent/resolveTool.js';
 import { createSlotPool, analyzeConcurrencyFromEnv, taskTtlMsFromEnv, type SlotPool } from './agent/slots.js';
 import { createStatusRegistry, type StatusRegistry } from './status/registry.js';
-import { createCallStore, type CallStore } from './agent/callStore.js';
+import { createResultStore, type ResultStore } from './agent/resultStore.js';
 import { startStatusEndpoint, statusPortFromEnv } from './status/endpoint.js';
 import { registerServer, unregisterServer } from './status/discovery.js';
 import { isMainModule } from './util/entry.js';
@@ -54,8 +54,8 @@ const LIFETIME =
 const STATUS_NOTE = 'GET the returned statusUrl to see how work in progress is going.';
 
 const TIMEOUT_RECOVERY =
-  'Pass callId (any unique string) so that if your environment stops waiting, you can still '
-  + 'fetch the result with get_status -- the work finishes either way.';
+  'If your environment stops waiting for this call, the work still finishes -- pass the same '
+  + 'video to get_status afterwards to collect the result.';
 
 const BATCHING =
   'Pass one item in videos for a single video or several to batch them; results come back '
@@ -65,9 +65,8 @@ const BATCHING =
 const SERVER_INSTRUCTIONS =
   'Video extraction and analysis for AI agents. Call resolve_video for a video\'s metadata '
   + 'and, optionally, the file itself; analyze_video to get a transcript and the important '
-  + 'keyframes from any video, by URL or local path; get_status to collect a result if your '
-  + 'harness stopped waiting for a call, which finishes in the background either way as long '
-  + 'as you passed it a callId.';
+  + 'keyframes from any video, by URL or local path; get_status with that same URL or path to '
+  + 'collect a result if your harness stopped waiting, since the work finishes either way.';
 
 const analyzeItemSchema = z.object({
   pathOrUrl: z.string().describe('A video URL, or a path to a video file already on this machine. Both are accepted.'),
@@ -451,11 +450,11 @@ export function buildServer(opts?: { analyzeSlots?: SlotPool; statusPort?: numbe
   // slightly, but needlessly) disagree.
   const startedAt = Date.now();
   const statusRegistry: StatusRegistry = createStatusRegistry();
-  // Replies kept by caller-supplied id, so a client that stops waiting can
-  // still collect the result (src/agent/callStore.ts). Per-server, like the
-  // registry and the task store; the same TTL governs both handles and
-  // records, since they expire for the same reason.
-  const callStore: CallStore = createCallStore(taskTtlMsFromEnv() ?? 0);
+  // Finished results kept by the url/path they were asked for, so a client
+  // that stops waiting can still collect them (src/agent/resultStore.ts).
+  // Per-server, like the registry and the task store; the same TTL governs
+  // handles and records, since they expire for the same reason.
+  const resultStore: ResultStore = createResultStore(taskTtlMsFromEnv() ?? 0);
   const statusEndpoint = startStatusEndpoint(
     statusRegistry,
     {
@@ -510,64 +509,74 @@ export function buildServer(opts?: { analyzeSlots?: SlotPool; statusPort?: numbe
     },
   );
 
-  // get_status: retrieve a call by the id its caller supplied.
+  // get_status: look a video up by the URL or path it was asked for.
   //
-  // Deliberately NOT task-capable. It is a lookup against in-memory state and
-  // returns immediately; registering it with the task plumbing would add the
-  // ~150ms polling floor and cancellation semantics to a call that needs
-  // neither.
+  // Keyed on the video rather than on an id the caller had to invent in
+  // advance: recovery matters exactly when nobody thought to prepare for it,
+  // and the url/path is required on every call, so a caller cannot fail to
+  // have one. Deliberately NOT task-capable -- it reads in-memory state and
+  // returns at once, so the task plumbing would add a polling floor and
+  // cancellation semantics for nothing.
   server.registerTool(
     'get_status',
     {
       title: 'Get status',
       description:
-        'Use this to collect the result of an earlier resolve_video or analyze_video call by '
-        + 'the callId you gave it -- reach for it when your environment stopped waiting for a '
-        + 'long call, since the work carries on regardless. A finished call returns exactly the '
-        + 'reply you would have received; one still running returns its stage history. Pass '
-        + 'several ids to check several calls at once. Treat "unknown" as no answer rather than '
-        + 'a failure -- the id may never have existed, may have expired, or may belong to a '
-        + 'server that has restarted -- and read the files at your destinationPath instead.',
+        'Use this to collect the result of an earlier analyze_video or resolve_video call, or to '
+        + 'see how one still in flight is doing -- reach for it when your environment stopped '
+        + 'waiting, since the work carries on regardless. Pass the same video URLs or file paths '
+        + 'you passed then, several at once if you like. A finished video returns exactly the '
+        + 'result the original call would have given you; one still running returns the stages it '
+        + 'has reached. Treat "unknown" as no answer rather than a failure -- it may never have '
+        + 'been asked for, may have expired, or may belong to a server that has restarted -- and '
+        + 'read the files at the destinationPath you chose instead.',
       inputSchema: {
-        callIds: z.array(z.string()).min(1).describe('The callId values you supplied to earlier resolve_video or analyze_video calls.'),
+        videos: z.array(z.string()).min(1).describe('The same video URLs or file paths you passed to analyze_video or resolve_video.'),
       },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    async (args: { callIds: string[] }) => {
+    async (args: { videos: string[] }) => {
       const su = await statusEndpoint.url;
       const snap = statusRegistry.snapshot();
-      const calls = args.callIds.map((callId) => {
-        const records = callStore.get(callId);
-        if (records.length === 0) {
+      const videos = args.videos.map((url) => {
+        const finished = resultStore.get(url);
+        // Running rows come from the registry, which already keys items by
+        // url and holds their stage history -- no second bookkeeping.
+        const running = snap.items.filter((i) => i.url === url && i.outcome === undefined);
+        if (finished.length === 0 && running.length === 0) {
           return {
-            callId,
+            url,
             state: 'unknown' as const,
-            note: `No record of this callId on this server (pid ${process.pid}). It may never have `
-              + 'existed, may have expired, or may belong to a server that has since restarted -- this '
-              + 'cannot tell those apart. If you know the destinationPath you passed, the files there '
-              + 'are the durable result and outlive any handle.',
+            note: `No record of this video on this server (pid ${process.pid}). It may never have `
+              + 'been asked for here, may have expired, or may belong to a server that has since '
+              + 'restarted -- this cannot tell those apart. The files at the destinationPath you '
+              + 'chose are the durable result and outlive any of this.',
           };
         }
-        // A reused id returns every matching record rather than a merge --
-        // silently picking one would hide a result the caller may want.
         return {
-          callId,
-          state: records.length === 1 ? undefined : ('duplicate_ids' as const),
-          calls: records.map((r) => (r.finishedAt !== undefined
-            ? { tool: r.tool, state: 'finished' as const, startedAt: r.startedAt, finishedAt: r.finishedAt, result: r.reply }
-            : {
-                tool: r.tool,
+          url,
+          ...(running.length > 0
+            ? {
                 state: 'running' as const,
-                startedAt: r.startedAt,
                 // Observations only, exactly as the status channel reports
-                // them: stage history, never a verdict about health.
-                items: snap.items
-                  .filter((i) => i.tool === r.tool && i.outcome === undefined)
-                  .map((i) => ({ url: i.url, destinationPath: i.destinationPath, stageHistory: i.stageHistory })),
-              })),
+                // them: stages reached, never a verdict about health.
+                inProgress: running.map((i) => ({
+                  tool: i.tool, destinationPath: i.destinationPath, stageHistory: i.stageHistory,
+                })),
+              }
+            : {}),
+          // Every finished record, not just the newest: the same video may
+          // have been analyzed twice with different parameters, and picking
+          // one would hide a result the caller may want.
+          ...(finished.length > 0
+            ? {
+                state: running.length > 0 ? ('running' as const) : ('finished' as const),
+                results: finished.map((r) => ({ tool: r.tool, finishedAt: r.finishedAt, result: r.result })),
+              }
+            : {}),
         };
       });
-      return toResult({ calls }, su);
+      return toResult({ videos }, su);
     },
   );
 
@@ -579,7 +588,6 @@ export function buildServer(opts?: { analyzeSlots?: SlotPool; statusPort?: numbe
       inputSchema: {
         destinationPath: z.string().describe('Directory to write manifests, transcripts and frames into. Created if missing.'),
         videos: z.array(analyzeItemSchema).min(1).describe('One entry per video to analyze. One item = single video, flat layout; several = video-N subdirectories.'),
-        callId: z.string().optional().describe('Your own unique id for THIS call (not per video). Supply one and you can retrieve the result later with get_status, even if your environment stops waiting for this call.'),
       },
       // Fix 4(c): both tools write to the user's filesystem -- metadata,
       // media, manifest, transcript and frame images -- and both delete
@@ -626,11 +634,11 @@ export function buildServer(opts?: { analyzeSlots?: SlotPool; statusPort?: numbe
           handleTask = (await extra.taskStore.getTask(task.taskId)) ?? task;
         }
         const typedArgs = args as AnalyzeToolArgs;
+        const itemUrls = typedArgs.videos.map((v) => v.pathOrUrl);
         const ids = registerItems(
           statusRegistry, 'analyze', typedArgs.destinationPath,
           typedArgs.videos.map((v) => v.pathOrUrl), task.taskId,
         );
-        if (args.callId) callStore.start(args.callId, 'analyze');
         void (async () => {
           try {
             const r = await runAnalyzeExecution(
@@ -692,7 +700,7 @@ export function buildServer(opts?: { analyzeSlots?: SlotPool; statusPort?: numbe
               throw e;
             });
             r.videos.forEach((v, i) => statusRegistry.finish(ids[i]!, v.status));
-            if (args.callId) callStore.finish(args.callId, { ...r, statusUrl: su });
+            r.videos.forEach((v, i) => resultStore.record(itemUrls[i]!, 'analyze', v));
             try {
               await extra.taskStore.storeTaskResult(task.taskId, 'completed', toResult(r, su));
             } catch {
@@ -742,7 +750,6 @@ export function buildServer(opts?: { analyzeSlots?: SlotPool; statusPort?: numbe
       inputSchema: {
         destinationPath: z.string().describe('Directory to write metadata (and the video, if requested) into. Created if missing. Re-running the same call overwrites in place.'),
         videos: z.array(resolveItemSchema).min(1).describe('One entry per video to resolve. One item = single video, flat layout; several = video-N subdirectories.'),
-        callId: z.string().optional().describe('Your own unique id for THIS call (not per video). Supply one and you can retrieve the result later with get_status, even if your environment stops waiting for this call.'),
       },
       // Fix 4(c): both tools write to the user's filesystem -- metadata,
       // media, manifest, transcript and frame images -- and both delete
@@ -793,11 +800,11 @@ export function buildServer(opts?: { analyzeSlots?: SlotPool; statusPort?: numbe
           handleTask = (await extra.taskStore.getTask(task.taskId)) ?? task;
         }
         const typedArgs = args as ResolveToolArgs;
+        const itemUrls = args.videos.map((v) => v.url);
         const ids = registerItems(
           statusRegistry, 'resolve', typedArgs.destinationPath,
           typedArgs.videos.map((v) => v.url), task.taskId,
         );
-        if (args.callId) callStore.start(args.callId, 'resolve');
         void (async () => {
           // First statement, before any await -- the client cannot even
           // learn this taskId (createTask's own handler hasn't returned
@@ -826,7 +833,7 @@ export function buildServer(opts?: { analyzeSlots?: SlotPool; statusPort?: numbe
               throw e;
             });
             r.videos.forEach((v, i) => statusRegistry.finish(ids[i]!, v.status));
-            if (args.callId) callStore.finish(args.callId, { ...r, statusUrl: su });
+            r.videos.forEach((v, i) => resultStore.record(itemUrls[i]!, 'resolve', v));
             try {
               await extra.taskStore.storeTaskResult(task.taskId, 'completed', toResult(r, su));
             } catch {

@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { buildServer } from '../src/mcp.js';
-import { createCallStore } from '../src/agent/callStore.js';
+import { createResultStore } from '../src/agent/resultStore.js';
 
 /**
  * Recovering a result after the client stopped waiting.
@@ -15,8 +15,9 @@ import { createCallStore } from '../src/agent/callStore.js';
  * and moves on, while the server keeps working. The analysis finishes, the
  * files are written, and the reply has nowhere to go.
  *
- * The id has to come from the CALLER. A server-minted id would be handed back
- * in the reply, which is exactly what was lost.
+ * Looked up by the VIDEO, not by an id the caller had to invent beforehand.
+ * Recovery matters exactly when nobody prepared for it, and the url or path
+ * is required on every call, so a caller cannot fail to have one.
  */
 
 let prevPath: string | undefined;
@@ -47,119 +48,154 @@ async function connect(): Promise<Client> {
   return client;
 }
 
-const parse = (r: unknown): { calls: Array<Record<string, unknown>> } =>
-  JSON.parse(((r as { content: Array<{ text: string }> }).content[0]!).text) as { calls: Array<Record<string, unknown>> };
+const payload = (r: unknown): Record<string, unknown> =>
+  JSON.parse(((r as { content: Array<{ text: string }> }).content[0]!).text) as Record<string, unknown>;
+const lookup = (r: unknown): Array<Record<string, unknown>> =>
+  payload(r)['videos'] as Array<Record<string, unknown>>;
+
+const URL_A = 'https://example.invalid/a';
+const URL_B = 'https://example.invalid/b';
 
 describe('get_status', () => {
-  it('hands back the finished call under the id the CALLER chose', async () => {
+  it('returns a finished video\'s result under the URL it was asked for', async () => {
     fakeYtDlp();
     const client = await connect();
     const dest = mkdtempSync(join(tmpdir(), 'vem-gsdest-'));
-    const callId = 'my-own-id-abc123';
 
     const original = await client.callTool({
       name: 'resolve_video',
-      arguments: { destinationPath: dest, callId, videos: [{ url: 'https://example.invalid/v' }] },
+      arguments: { destinationPath: dest, videos: [{ url: URL_A }] },
     });
 
-    const looked = await client.callTool({ name: 'get_status', arguments: { callIds: [callId] } });
-    const c = parse(looked).calls[0]! as { callId: string; calls: Array<{ state: string; result: unknown }> };
+    const found = lookup(await client.callTool({ name: 'get_status', arguments: { videos: [URL_A] } }))[0]!;
 
-    expect(c.callId).toBe(callId);
-    expect(c.calls[0]!.state).toBe('finished');
-    // Byte-identical to what the original call returned: a lookup that
-    // reconstructed the reply could drift from the real one.
-    const originalPayload = JSON.parse(((original as { content: Array<{ text: string }> }).content[0]!).text) as unknown;
-    expect(c.calls[0]!.result).toEqual(originalPayload);
+    expect(found['url']).toBe(URL_A);
+    expect(found['state']).toBe('finished');
+    // The item's own result, identical to what the original call returned for
+    // it: a lookup that rebuilt the reply could drift from the real one.
+    const originalItem = (payload(original)['videos'] as unknown[])[0];
+    const results = found['results'] as Array<{ result: unknown }>;
+    expect(results[0]!.result).toEqual(originalItem);
     await client.close();
   }, 60_000);
 
-  it('reports an id it has never seen as unknown, and points at the files', async () => {
-    // Never-seen, expired, and belonging-to-a-restarted-server are genuinely
-    // indistinguishable here, so the answer must not pick one -- and must say
-    // where the durable result actually lives.
-    const client = await connect();
-    const r = await client.callTool({ name: 'get_status', arguments: { callIds: ['no-such-id'] } });
-    const c = parse(r).calls[0]! as { state: string; note: string };
-
-    expect(c.state).toBe('unknown');
-    expect(c.note).toMatch(/expired/i);
-    expect(c.note).toMatch(/restarted/i);
-    expect(c.note).toMatch(/destinationPath/);
-    await client.close();
-  }, 30_000);
-
-  it('answers several ids in one call, mixing known and unknown', async () => {
+  it('needs nothing to have been prepared in advance', async () => {
+    // The whole point of keying on the video: this call passes no id, no
+    // handle, nothing -- exactly like a caller who did not know it would need
+    // to recover anything.
     fakeYtDlp();
     const client = await connect();
     const dest = mkdtempSync(join(tmpdir(), 'vem-gsdest2-'));
-    await client.callTool({
-      name: 'resolve_video',
-      arguments: { destinationPath: dest, callId: 'known-1', videos: [{ url: 'https://example.invalid/a' }] },
-    });
+    await client.callTool({ name: 'resolve_video', arguments: { destinationPath: dest, videos: [{ url: URL_A }] } });
 
-    const r = await client.callTool({ name: 'get_status', arguments: { callIds: ['known-1', 'missing-2'] } });
-    const calls = parse(r).calls;
-
-    expect(calls.length).toBe(2);
-    expect(calls[0]!['callId']).toBe('known-1');
-    expect(calls[1]!['state']).toBe('unknown');
+    const found = lookup(await client.callTool({ name: 'get_status', arguments: { videos: [URL_A] } }))[0]!;
+    expect(found['state']).toBe('finished');
     await client.close();
   }, 60_000);
 
-  it('leaves the tool reply unchanged when no callId is passed', async () => {
-    // Additive: a caller that ignores this feature must see exactly what it
-    // saw before.
+  it('recovers an analyze_video result too, not just resolve_video', async () => {
+    // analyze_video is the tool that actually gets timed out -- it is the one
+    // that takes minutes -- so recovery has to work there, and a test that
+    // only exercised resolve_video would let that rot.
+    const { makeTestVideo } = await import('../src/media/ffmpeg.js');
+    const client = await connect();
+    const src = mkdtempSync(join(tmpdir(), 'vem-gsvid-'));
+    const video = await makeTestVideo(join(src, 'v.mp4'), 1);
+    const dest = mkdtempSync(join(tmpdir(), 'vem-gsdesta-'));
+
+    const original = await client.callTool({
+      name: 'analyze_video',
+      arguments: { destinationPath: dest, videos: [{ pathOrUrl: video, frames: 'none', transcript: false }] },
+    });
+
+    // Looked up by the LOCAL PATH, which is what was passed -- the tool takes
+    // either, so recovery must accept either.
+    const found = lookup(await client.callTool({ name: 'get_status', arguments: { videos: [video] } }))[0]!;
+    expect(found['state']).toBe('finished');
+    const results = found['results'] as Array<{ tool: string; result: unknown }>;
+    expect(results[0]!.tool).toBe('analyze');
+    expect(results[0]!.result).toEqual((payload(original)['videos'] as unknown[])[0]);
+    await client.close();
+  }, 120_000);
+
+  it('reports a video it has never seen as unknown, and points at the files', async () => {
+    // Never-asked-for, expired, and belonging-to-a-restarted-server are
+    // genuinely indistinguishable here, so the answer must not pick one --
+    // and must say where the durable result actually lives.
+    const client = await connect();
+    const found = lookup(await client.callTool({ name: 'get_status', arguments: { videos: ['https://nope.invalid/x'] } }))[0]!;
+
+    expect(found['state']).toBe('unknown');
+    expect(found['note']).toMatch(/expired/i);
+    expect(found['note']).toMatch(/restarted/i);
+    expect(found['note']).toMatch(/destinationPath/);
+    await client.close();
+  }, 30_000);
+
+  it('answers several videos in one call, mixing known and unknown', async () => {
     fakeYtDlp();
     const client = await connect();
     const dest = mkdtempSync(join(tmpdir(), 'vem-gsdest3-'));
-    const r = await client.callTool({
-      name: 'resolve_video',
-      arguments: { destinationPath: dest, videos: [{ url: 'https://example.invalid/v' }] },
-    });
-    const payload = JSON.parse(((r as { content: Array<{ text: string }> }).content[0]!).text) as Record<string, unknown>;
+    await client.callTool({ name: 'resolve_video', arguments: { destinationPath: dest, videos: [{ url: URL_A }] } });
 
-    expect(Object.keys(payload).sort()).toEqual(['statusUrl', 'videos']);
+    const found = lookup(await client.callTool({ name: 'get_status', arguments: { videos: [URL_A, URL_B] } }));
+
+    expect(found.length).toBe(2);
+    expect(found[0]!['state']).toBe('finished');
+    expect(found[1]!['state']).toBe('unknown');
+    await client.close();
+  }, 60_000);
+
+  it('matches the URL exactly as given, without inventing equivalences', async () => {
+    // youtu.be and youtube.com forms, or a stripped ?si= parameter, would be
+    // a guess about which video is meant. Answering about the wrong one is
+    // worse than answering "unknown".
+    fakeYtDlp();
+    const client = await connect();
+    const dest = mkdtempSync(join(tmpdir(), 'vem-gsdest4-'));
+    await client.callTool({ name: 'resolve_video', arguments: { destinationPath: dest, videos: [{ url: URL_A }] } });
+
+    const found = lookup(await client.callTool({ name: 'get_status', arguments: { videos: [`${URL_A}?si=tracking`] } }))[0]!;
+    expect(found['state']).toBe('unknown');
+    await client.close();
+  }, 60_000);
+
+  it('leaves both tools\' replies exactly as they were', async () => {
+    // Purely additive: nothing about an ordinary call changed shape.
+    fakeYtDlp();
+    const client = await connect();
+    const dest = mkdtempSync(join(tmpdir(), 'vem-gsdest5-'));
+    const r = await client.callTool({ name: 'resolve_video', arguments: { destinationPath: dest, videos: [{ url: URL_A }] } });
+    expect(Object.keys(payload(r)).sort()).toEqual(['statusUrl', 'videos']);
     await client.close();
   }, 60_000);
 });
 
-describe('the call store itself', () => {
-  it('keeps a reused id as separate records rather than overwriting', () => {
-    // Overwriting would silently discard a result the caller may still ask
-    // for; merging would invent a call that never happened.
-    const s = createCallStore(0);
-    s.start('dup', 'resolve');
-    s.finish('dup', { first: true });
-    s.start('dup', 'analyze');
-    s.finish('dup', { second: true });
+describe('the result store itself', () => {
+  it('keeps both results when the same video is analyzed twice', () => {
+    // Legitimate: the same video at different ranges or frame settings.
+    // Replacing would lose a result the caller may still ask for.
+    const s = createResultStore(0);
+    s.record(URL_A, 'analyze', { first: true });
+    s.record(URL_A, 'analyze', { second: true });
 
-    const got = s.get('dup');
-    expect(got.length).toBe(2);
-    expect(got.map((r) => r.reply)).toEqual([{ first: true }, { second: true }]);
+    expect(s.get(URL_A).map((r) => r.result)).toEqual([{ first: true }, { second: true }]);
   });
 
-  it('expires a record only after it FINISHED, never mid-flight', () => {
-    // TTL from completion: a long call must not expire while it is still
-    // running, which is exactly the case this feature exists to serve.
+  it('expires a record once the TTL has passed', () => {
     let clock = 1_000;
-    const s = createCallStore(100, () => clock);
-    s.start('slow', 'analyze');
-    clock += 10_000;                       // far past the TTL, still running
-    expect(s.get('slow').length).toBe(1);
-
-    s.finish('slow', { done: true });
-    expect(s.get('slow').length).toBe(1);  // fresh
+    const s = createResultStore(100, () => clock);
+    s.record(URL_A, 'resolve', { ok: true });
+    expect(s.get(URL_A).length).toBe(1);
     clock += 101;
-    expect(s.get('slow').length).toBe(0);  // now expired
+    expect(s.get(URL_A).length).toBe(0);
   });
 
   it('never expires anything when the TTL is 0', () => {
     let clock = 0;
-    const s = createCallStore(0, () => clock);
-    s.start('keep', 'resolve');
-    s.finish('keep', { ok: true });
+    const s = createResultStore(0, () => clock);
+    s.record(URL_A, 'resolve', { ok: true });
     clock += 10 ** 9;
-    expect(s.get('keep').length).toBe(1);
+    expect(s.get(URL_A).length).toBe(1);
   });
 });
