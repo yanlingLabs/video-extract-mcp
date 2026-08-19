@@ -58,19 +58,16 @@ const TIMEOUT_RECOVERY =
   + 'fetch the result with get_status -- the work finishes either way.';
 
 const BATCHING =
-  'Pass one item in videos for a single video, several to batch them in one call. One item '
-  + 'writes into destinationPath; several write into destinationPath/video-1/, video-2/ in '
-  + 'array order. Read results per item, in order -- one failing does not fail the others.';
+  'Pass one item in videos for a single video or several to batch them; results come back '
+  + 'one per item in order (one failing does not fail the others), written into '
+  + 'destinationPath directly for a single item or into video-1/, video-2/ for several.';
 
 const SERVER_INSTRUCTIONS =
-  'Video extraction for AI agents. resolve_video looks a video up and by default returns '
-  + 'only metadata -- title, creator, duration, chapters -- without downloading anything; '
-  + 'analyze_video does the real work, returning a transcript plus important, deduplicated '
-  + 'keyframes. Both write output to a directory you choose and reply with a compact '
-  + 'summary plus file paths rather than dumping everything into the conversation, and both '
-  + 'can run as background tasks. get_status retrieves an earlier call by the callId you '
-  + 'gave it. On a long video, call resolve_video first, read the chapters, then analyze '
-  + 'only the section that matters.';
+  'Video extraction and analysis for AI agents. Call resolve_video for a video\'s metadata '
+  + 'and, optionally, the file itself; analyze_video to get a transcript and the important '
+  + 'keyframes from any video, by URL or local path; get_status to collect a result if your '
+  + 'harness stopped waiting for a call, which finishes in the background either way as long '
+  + 'as you passed it a callId.';
 
 const analyzeItemSchema = z.object({
   pathOrUrl: z.string().describe('A video URL, or a path to a video file already on this machine. Both are accepted.'),
@@ -122,7 +119,7 @@ const resolveItemSchema = z.object({
 const RESOLVE_DESCRIPTION =
   'Use this to find out what a video IS before spending time on it: by default it downloads '
   + 'nothing and returns title, creator, duration, chapters, a short description preview and '
-  + 'the path to full metadata. On a long video, call this first and read the chapters, then '
+  + 'the path to full metadata. On a long video, call this first, read the chapters, then '
   + 'analyze only the section that matters. '
   + 'Each item returns { status, platform, title, creator, duration, chapters, '
   + 'descriptionPreview, commentCount, metadataPath, videoPath?, clipStart?, clipEnd?, '
