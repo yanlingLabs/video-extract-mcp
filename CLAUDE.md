@@ -173,6 +173,15 @@ ffmpeg is passed an explicit `-f` because it infers the muxer from the
 output extension — a `.part` name has none, which silently broke every HLS
 URL in one draft.
 
+**A caller-supplied `callId` is what makes a lost reply recoverable.** Some clients
+cap tool-call duration and send `notifications/cancelled` while the server keeps
+working -- observed in a real client's own MCP log. `get_status` returns the stored
+reply for that id. The id must come from the CALLER: a server-minted one would be
+returned in the reply, which is the thing that was lost. `src/agent/callStore.ts`
+holds replies verbatim and is deliberately SEPARATE from `src/status/registry.ts`,
+whose observables-never-verdicts rule stays intact by not being asked to store
+results.
+
 **`src/types.ts` is the single source of truth** for shared types.
 
 **No Python.** Node 26, ESM, TypeScript strict with `noUncheckedIndexedAccess`.

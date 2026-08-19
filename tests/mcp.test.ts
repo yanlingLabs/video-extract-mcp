@@ -93,7 +93,12 @@ function firstVideo<T>(content: CallToolResult['content']): T {
 // reachable through this server at all.
 describe('v2 surface', () => {
   it('exposes exactly two tools', () => {
-    expect([...TOOL_NAMES].sort()).toEqual(['analyze_video', 'resolve_video']);
+    // Two tools that do the work, plus one lookup. get_status is a meta
+    // tool -- it starts no work and reads only in-memory state -- so the
+    // "collapsed to two" invariant below is about the WORK surface, which is
+    // still exactly resolve_video and analyze_video.
+    expect([...TOOL_NAMES].sort()).toEqual(['analyze_video', 'get_status', 'resolve_video']);
+    expect([...TOOL_NAMES].filter((n) => n !== 'get_status').sort()).toEqual(['analyze_video', 'resolve_video']);
   });
   it('no longer exposes get_frame or get_clip', () => {
     expect(TOOL_NAMES).not.toContain('get_frame');
@@ -126,11 +131,18 @@ describe('v2 surface', () => {
     // listTools(), not a hardcoded constant compared to itself.
     const client = await connectClient(buildServer());
     const { tools } = await client.listTools();
-    for (const name of TOOL_NAMES) {
+    for (const name of TOOL_NAMES.filter((n) => n !== 'get_status')) {
       const tool = tools.find((t) => t.name === name);
       if (!tool) throw new Error(`${name} not found in listTools()`);
       expect(tool.annotations?.readOnlyHint).toBe(false);
     }
+    // get_status is the exception, and genuinely so: it starts no work and
+    // reads in-memory state only. Asserted rather than skipped, because a
+    // lookup that quietly gained the ability to write would be a real change
+    // in what a client is trusting.
+    const lookup = tools.find((t) => t.name === 'get_status');
+    if (!lookup) throw new Error('get_status not found in listTools()');
+    expect(lookup.annotations?.readOnlyHint).toBe(true);
     await client.close();
   });
 });

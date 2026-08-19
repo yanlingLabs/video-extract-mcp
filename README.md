@@ -10,7 +10,7 @@ Built for AI agents. Two MCP tools, no cloud, no API keys, no Python.
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%E2%89%A526-brightgreen.svg)](https://nodejs.org)
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-blue.svg)](https://www.typescriptlang.org/)
-[![Tests](https://img.shields.io/badge/tests-675%20passing-success.svg)](#testing)
+[![Tests](https://img.shields.io/badge/tests-682%20passing-success.svg)](#testing)
 [![MCP](https://img.shields.io/badge/MCP-server-orange.svg)](https://modelcontextprotocol.io)
 
 ---
@@ -318,6 +318,28 @@ analyze_video({
 - One exact frame: `start: 7, end: 7, frames: "even", maxFrames: 1, transcript: false`.
 
 Frame selection is bounded to `start`–`end` in both modes, and the transcript covers only the selected range.
+
+## Recovering a call your client stopped waiting for
+
+Some clients cap how long they will wait for a tool call. When that happens the work **carries on** — the server keeps going and writes its files; only the client stops listening. To collect the result afterwards, pass a `callId` of your own:
+
+```json
+analyze_video({
+  destinationPath: "./out",
+  callId: "ramen-analysis-1",
+  videos: [{ pathOrUrl: "https://youtube.com/watch?v=..." }]
+})
+```
+
+Then, whenever you like:
+
+```json
+get_status({ callIds: ["ramen-analysis-1"] })
+```
+
+A finished call hands back exactly the reply you would have received, file paths and all. One still running comes back with its stage history. Several ids can be checked at once.
+
+The id must be **yours**: a server-generated one would be returned in the reply, which is the thing that was lost. Records live in the server's memory and expire with `VIDEO_EXTRACT_TASK_TTL_MS`, so a restarted server answers `unknown` — and says so plainly rather than guessing, because the files at `destinationPath` are the durable result either way.
 
 ## Background tasks
 
