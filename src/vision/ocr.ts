@@ -161,10 +161,15 @@ export async function ocrFrame(imagePath: string, langs = 'eng') {
   // not found". The frames in that same run were read without trouble by
   // ffmpeg and sharp -- so the directory holding them demonstrably works for
   // this process and its children, and a global temp directory demonstrably
-  // did not. Whatever the mechanism (a sandboxed client redirecting /tmp per
-  // process is the likeliest), the fix is to stop depending on a directory
-  // whose meaning varies with how the server was launched, and use the one
-  // the pipeline is already reading and writing successfully.
+  // The difference was found by reading the failing server's own environment:
+  // it had NO TMPDIR set at all, where a server launched by another client on
+  // the same machine had `TMPDIR=/var/folders/.../T/`. With TMPDIR unset,
+  // os.tmpdir() falls back to `/tmp` -- and the failing crop path was
+  // `/tmp/norma-ocr-<pid>-....png` carrying that server's exact pid. So the
+  // temp directory this code writes to is decided by how the MCP client
+  // happened to launch the process, which is not something a video pipeline
+  // should depend on. Staging beside the frame removes the dependency
+  // entirely; it needs no theory about why `/tmp` failed for that process.
   const stageDir = dirname(imagePath);
   const [content, subtitle] = await Promise.all([
     ocrBuffer(contentBuf, langs, stageDir), ocrBuffer(bottomBuf, langs, stageDir),

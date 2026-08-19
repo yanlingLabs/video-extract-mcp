@@ -100,3 +100,21 @@ Other open items, in rough priority order:
 
 - ~~**`adm-zip` <0.6.0 has no upstream fix.**~~ **Resolved.** `adm-zip@0.6.0` was published and is now forced via an `overrides` entry, taking this repository to a clean `npm audit`. `onnxruntime-node` still pins `^0.5.16`, so the override is doing real work; npm's own `audit fix` would instead downgrade `@huggingface/transformers` to 3.8.1, which is a breaking change and the wrong direction. Verified rather than assumed: the exact adm-zip API the installer calls (`new AdmZip(path)`, `getEntries`, `extractEntryTo`) behaves identically on 0.6.0. NOT verified: onnxruntime's `postinstall` running end to end against 0.6.0 — npm's install-script policy on this machine blocks it, and `allowScripts` did not override that. The risk of that gap is small, since onnxruntime bundles prebuilt binaries for every supported platform and the ZIP extraction is a fallback. Still open, as with `sharp`: npm applies `overrides` only from the root project, so neither reaches consumers of the published package.
 - **The `sharp`/libvips advisories are fixed for this repo but NOT for npm consumers.** `@huggingface/transformers` pins `sharp: ^0.34.5`; an `overrides` entry forces `^0.35.3` here, which resolves CVE-2026-33327/-33328/-35590/-35591 and additionally dedupes libvips (two copies were loading at once, which libvips warns can cause "spurious casting failures and mysterious crashes"). npm applies `overrides` only from the root project, so this cannot protect anyone who installs the published package — verified by installing the packed tarball into a clean project and finding the vulnerable nested copy still there. Nothing further can be done from this side; the real fix is upstream widening its pin. `SECURITY.md` documents the override consumers can apply themselves in the meantime. Drop our override once transformers ships a `sharp` range that admits ≥0.35.0.
+
+**Where OCR crops are staged (0.10.1), and the evidence behind it.**
+
+An analyze run lost all 459 frames to OCR failures reporting `image file not
+found` for a file that was present with 193101 bytes in it. Diagnosed by
+reading the failing MCP server's own environment: it had **no `TMPDIR`**,
+where a server launched by a different client on the same machine had
+`TMPDIR=/var/folders/.../T/`. Node's `os.tmpdir()` falls back to `/tmp` when
+TMPDIR is unset, and the failing crop path was `/tmp/norma-ocr-<pid>-....png`
+carrying that server's pid. The frames in the same run — written by ffmpeg,
+read by sharp, in the working directory — were fine throughout.
+
+Crops are now staged beside the frame. Why `/tmp` specifically failed for
+that process is still unexplained, and deliberately so: the fix removes the
+dependency rather than resting on a theory about it. Worth revisiting only if
+something else in the pipeline is found to depend on `os.tmpdir()` in the
+same way — `src/util/cookies.ts` stages its jar copy there, and would be the
+next candidate if this recurs elsewhere.
