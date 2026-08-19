@@ -30,9 +30,7 @@ const PLATFORMS =
   + 'Channels and direct .mp4/.m3u8 URLs; many other sites work too, and unsupported ones '
   + 'come back as a failure status rather than throwing.';
 
-const LIFETIME =
-  'Point destinationPath at a temp directory if you want the output cleaned up; this tool '
-  + 'never deletes it.';
+const LIFETIME = '';
 
 // Task 7 (spec §9): one sentence, dictated verbatim by the plan, appended to
 // BOTH tool descriptions -- factored into a shared constant for the same
@@ -51,11 +49,13 @@ const LIFETIME =
 // this on a plain call). Minimal fix: drop the inaccurate "In
 // background-task mode" qualifier so the sentence is true for both: only
 // this clause moves, nothing else in the frozen text does.
-const STATUS_NOTE = 'GET the returned statusUrl to see how work in progress is going.';
+const STATUS_NOTE =
+  'For anything long, call this as a background task and poll the returned statusUrl to watch '
+  + 'progress and check it is still alive -- do NOT use get_status for that. Reach for '
+  + 'get_status only afterwards, to collect a result your environment stopped waiting for; the '
+  + 'work finishes either way.';
 
-const TIMEOUT_RECOVERY =
-  'If your environment stops waiting for this call, the work still finishes -- pass the same '
-  + 'video to get_status afterwards to collect the result.';
+const TIMEOUT_RECOVERY = '';
 
 const BATCHING =
   'Pass one item in videos for a single video or several to batch them; results come back '
@@ -87,25 +87,20 @@ const analyzeItemSchema = z.object({
 // already supplies that default deeper in the pipeline, so an omitted
 // maxFrames still behaves as 35 without the schema needing to duplicate it.
 const ANALYZE_DESCRIPTION =
-  'Use this to read a video: it returns a transcript and a small set of important, '
-  + 'deduplicated keyframes rather than every frame. Output goes to destinationPath -- read '
-  + 'the returned paths; only a short transcript comes back inline. '
-  + 'Each item returns { status, title, duration, frameCount, framePaths, manifestPath, '
-  + 'transcriptPath?, transcript?, videoPath?, warnings }. '
+  'Read a video: returns its transcript and a small set of important, deduplicated keyframes '
+  + 'rather than every frame. Output is written to destinationPath -- read the returned paths; '
+  + 'only a short transcript comes back inline. Each item returns { status, title, duration, '
+  + 'frameCount, framePaths, manifestPath, transcriptPath?, transcript?, videoPath?, warnings }. '
   + BATCHING + ' '
-  + 'To analyze part of a video, pass start and end. For a single exact frame, pass the same '
-  + 'second as both, with frames: "even", maxFrames: 1 and transcript: false. For a '
-  + 'transcript alone, pass frames: "none" -- on a video with captions that skips the '
-  + 'download entirely and takes seconds instead of minutes. '
-  + 'Check every item\'s status before using it. On "rate_limited", wait and retry rather '
-  + 'than treating it as permanent, and space out repeated requests for the same video. If '
-  + 'the failure carries suggestedCommand, ASK THE USER before running it -- it gives this '
-  + 'server access to their browser session. Read warnings to tell a stage that failed '
-  + 'apart from a video that genuinely had no speech, and check transcript.source to see '
-  + 'whether the text came from real captions or from local speech recognition. '
-  + 'Pass videoPath back in to inspect another moment without downloading again. '
-  + 'Call it as a background task for anything long; once started, it cannot be cancelled. '
-  + STATUS_NOTE + ' ' + TIMEOUT_RECOVERY + ' ' + LIFETIME + ' ' + PLATFORMS;
+  + 'Pass start and end for part of a video. For one exact frame use the same second for both '
+  + 'with frames: "even", maxFrames: 1, transcript: false. For a transcript alone use frames: '
+  + '"none" -- on a captioned video that skips the download entirely and takes seconds. '
+  + 'Check every item\'s status. "rate_limited" is temporary: wait, retry, and space out '
+  + 'repeats for the same video. If a failure carries suggestedCommand, ASK THE USER before '
+  + 'running it -- it gives this server access to their browser session. Read warnings, and '
+  + 'transcript.source, to tell a failed stage from a video that simply has no speech. Pass '
+  + 'videoPath back in to inspect another moment without downloading again. '
+  + STATUS_NOTE + ' ' + PLATFORMS;
 
 const resolveItemSchema = z.object({
   url: z.string().describe('Page or direct video URL.'),
@@ -116,22 +111,18 @@ const resolveItemSchema = z.object({
 });
 
 const RESOLVE_DESCRIPTION =
-  'Use this to find out what a video IS before spending time on it: by default it downloads '
-  + 'nothing and returns title, creator, duration, chapters, a short description preview and '
-  + 'the path to full metadata. On a long video, call this first, read the chapters, then '
-  + 'analyze only the section that matters. '
-  + 'Each item returns { status, platform, title, creator, duration, chapters, '
-  + 'descriptionPreview, commentCount, metadataPath, videoPath?, clipStart?, clipEnd?, '
-  + 'nextSteps }. '
-  + 'Set returnVideo: true to also download the file -- expect that to take real time. With '
-  + 'it, pass start and end together to fetch only a section; the clip STARTS AT 0, not at '
-  + 'the original timestamp, so use the returned offset when mapping times back. Leave '
-  + 'comments off unless you need them; they are slow on popular videos and go to the '
-  + 'metadata file, never inline. '
+  'Find out what a video IS before spending time on it: downloads nothing by default and '
+  + 'returns title, creator, duration, chapters, a description preview and the path to full '
+  + 'metadata. On a long video call this first, read the chapters, then analyze only the '
+  + 'section that matters. Each item returns { status, platform, title, creator, duration, '
+  + 'chapters, descriptionPreview, commentCount, metadataPath, videoPath?, clipStart?, '
+  + 'clipEnd?, nextSteps }. '
   + BATCHING + ' '
-  + 'Prefer this over analyze_video whenever you only need to know what a video is, or want '
-  + 'the file without analysis. '
-  + STATUS_NOTE + ' ' + TIMEOUT_RECOVERY + ' ' + LIFETIME + ' ' + PLATFORMS;
+  + 'Set returnVideo: true to download the file too -- that takes real time. With it, pass '
+  + 'start and end together for one section; the clip STARTS AT 0, so use the returned offset '
+  + 'when mapping times back. Leave comments off unless needed: slow on popular videos, and '
+  + 'written to the metadata file rather than inline. '
+  + STATUS_NOTE + ' ' + PLATFORMS;
 
 // Task 6: honest cancellation (spec §8/§13, task-1-report.md's fact (c)).
 // Queued-cancel is enforced here -- inside the pool-wrapped fn, which only
@@ -522,14 +513,12 @@ export function buildServer(opts?: { analyzeSlots?: SlotPool; statusPort?: numbe
     {
       title: 'Get status',
       description:
-        'Use this to collect the result of an earlier analyze_video or resolve_video call, or to '
-        + 'see how one still in flight is doing -- reach for it when your environment stopped '
-        + 'waiting, since the work carries on regardless. Pass the same video URLs or file paths '
-        + 'you passed then, several at once if you like. A finished video returns exactly the '
-        + 'result the original call would have given you; one still running returns the stages it '
-        + 'has reached. Treat "unknown" as no answer rather than a failure -- it may never have '
-        + 'been asked for, may have expired, or may belong to a server that has restarted -- and '
-        + 'read the files at the destinationPath you chose instead.',
+        'Collect the result of an earlier analyze_video or resolve_video call after your '
+        + 'environment stopped waiting for it -- the work carries on regardless. Pass the same '
+        + 'video URLs or file paths you passed then, several at once if you like; a finished one '
+        + 'returns exactly the result you would have received, one still running returns the '
+        + 'stages it has reached. To watch a call in flight, poll its statusUrl instead. Treat '
+        + '"unknown" as no answer, not a failure, and read the files at your destinationPath.',
       inputSchema: {
         videos: z.array(z.string()).min(1).describe('The same video URLs or file paths you passed to analyze_video or resolve_video.'),
       },
