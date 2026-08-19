@@ -26,9 +26,8 @@ const toResult = <T extends object>(r: T, statusUrl: string | null): CallToolRes
   ({ content: [{ type: 'text', text: JSON.stringify({ ...r, statusUrl }, null, 2) }] });
 
 const PLATFORMS =
-  'Use it for YouTube, TikTok, Facebook, X, Instagram, Twitch, Vimeo, Reddit, WeChat '
-  + 'Channels and direct .mp4/.m3u8 URLs; many other sites work too, and unsupported ones '
-  + 'come back as a failure status rather than throwing.';
+  'Handles YouTube, TikTok, Instagram, X, Facebook, Twitch, Vimeo, Reddit, WeChat Channels, '
+  + 'direct .mp4/.m3u8 URLs and many other sites; unsupported ones return a failure status.';
 
 const LIFETIME = '';
 
@@ -50,17 +49,17 @@ const LIFETIME = '';
 // background-task mode" qualifier so the sentence is true for both: only
 // this clause moves, nothing else in the frozen text does.
 const STATUS_NOTE =
-  'For anything long, call this as a background task and poll the returned statusUrl to watch '
-  + 'progress and check it is still alive -- do NOT use get_status for that. Reach for '
-  + 'get_status only afterwards, to collect a result your environment stopped waiting for; the '
-  + 'work finishes either way.';
+  'For anything long, call this as a background task: your environment notifies you with the '
+  + 'result when it finishes, so there is no need to poll for it. To watch progress or check '
+  + 'it is still alive meanwhile, GET the returned statusUrl. Reach for get_status ONLY if '
+  + 'your environment TIMED OUT the call -- the work finishes either way.';
 
 const TIMEOUT_RECOVERY = '';
 
 const BATCHING =
-  'Pass one item in videos for a single video or several to batch them; results come back '
-  + 'one per item in order (one failing does not fail the others), written into '
-  + 'destinationPath directly for a single item or into video-1/, video-2/ for several.';
+  'Pass several items in videos to batch them; results come back one per item in order, and '
+  + 'one failing does not fail the others. A single item writes into destinationPath, several '
+  + 'into video-1/, video-2/.';
 
 const SERVER_INSTRUCTIONS =
   'Video extraction and analysis for AI agents. Call resolve_video for a video\'s metadata '
@@ -513,12 +512,14 @@ export function buildServer(opts?: { analyzeSlots?: SlotPool; statusPort?: numbe
     {
       title: 'Get status',
       description:
-        'Collect the result of an earlier analyze_video or resolve_video call after your '
-        + 'environment stopped waiting for it -- the work carries on regardless. Pass the same '
+        'Use this ONLY if your environment TIMED OUT an earlier analyze_video or resolve_video '
+        + 'call -- the work carries on regardless and the result is still here. As a background '
+        + 'task your environment notifies you with the result on its own, and to watch a call in '
+        + 'flight you poll its statusUrl, so neither of those needs this tool. Pass the same '
         + 'video URLs or file paths you passed then, several at once if you like; a finished one '
         + 'returns exactly the result you would have received, one still running returns the '
-        + 'stages it has reached. To watch a call in flight, poll its statusUrl instead. Treat '
-        + '"unknown" as no answer, not a failure, and read the files at your destinationPath.',
+        + 'stages it has reached. Treat "unknown" as no answer, not a failure, and read the files '
+        + 'at your destinationPath.',
       inputSchema: {
         videos: z.array(z.string()).min(1).describe('The same video URLs or file paths you passed to analyze_video or resolve_video.'),
       },
