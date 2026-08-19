@@ -26,18 +26,13 @@ const toResult = <T extends object>(r: T, statusUrl: string | null): CallToolRes
   ({ content: [{ type: 'text', text: JSON.stringify({ ...r, statusUrl }, null, 2) }] });
 
 const PLATFORMS =
-  'Known-working sources: YouTube, TikTok, Facebook and Reels, X/Twitter, Instagram, '
-  + 'Twitch, Vimeo, Reddit, WeChat Channels, and direct .mp4/.m3u8 URLs. Many other '
-  + 'sites work through generic extraction; some will not, and those return a clear '
-  + 'failure status rather than throwing.';
+  'Use it for YouTube, TikTok, Facebook, X, Instagram, Twitch, Vimeo, Reddit, WeChat '
+  + 'Channels and direct .mp4/.m3u8 URLs; many other sites work too, and unsupported ones '
+  + 'come back as a failure status rather than throwing.';
 
 const LIFETIME =
-  'RESULTS written to destinationPath are NEVER deleted by this tool -- pick a '
-  + 'temp directory if you want them ephemeral. (While a video is being processed a '
-  + 'scratch subdirectory appears there and is removed when the item finishes; it '
-  + 'holds intermediates, never results.) In background-task mode the task '
-  + 'handle expires (default 30 minutes) and dies with the server process, but the '
-  + 'files are the durable result and survive both.';
+  'Point destinationPath at a temp directory if you want the output cleaned up; this tool '
+  + 'never deletes it.';
 
 // Task 7 (spec §9): one sentence, dictated verbatim by the plan, appended to
 // BOTH tool descriptions -- factored into a shared constant for the same
@@ -56,39 +51,26 @@ const LIFETIME =
 // this on a plain call). Minimal fix: drop the inaccurate "In
 // background-task mode" qualifier so the sentence is true for both: only
 // this clause moves, nothing else in the frozen text does.
-const STATUS_NOTE =
-  'The reply also carries statusUrl, a local HTTP '
-  + 'address: GET it for every video this server is working on, with stage '
-  + 'history, timestamps and raw activity samples (child process CPU, bytes '
-  + 'written) -- observations only, no judgments; fetch it twice and compare '
-  + 'to tell slow from stuck.';
+const STATUS_NOTE = 'GET the returned statusUrl to see how work in progress is going.';
 
 const TIMEOUT_RECOVERY =
-  'If your environment stops waiting for this call, the work continues and the result is '
-  + 'not lost: pass callId (any unique string you make up) and retrieve it later with '
-  + 'get_status, or read the files at destinationPath.';
+  'Pass callId (any unique string) so that if your environment stops waiting, you can still '
+  + 'fetch the result with get_status -- the work finishes either way.';
 
 const BATCHING =
-  'videos is an array: pass one item for a single video, several to process a batch '
-  + 'in one call. One video writes directly into destinationPath; several each write '
-  + 'into destinationPath/video-1/, video-2/ ... in array order. Results come back as '
-  + 'one entry per item, in order, each with its own status -- one video failing '
-  + 'never fails the others.';
+  'Pass one item in videos for a single video, several to batch them in one call. One item '
+  + 'writes into destinationPath; several write into destinationPath/video-1/, video-2/ in '
+  + 'array order. Read results per item, in order -- one failing does not fail the others.';
 
 const SERVER_INSTRUCTIONS =
-  'Video extraction for AI agents: two tools that do the work, plus a status lookup. resolve_video looks videos up and, by '
-  + 'default, returns only metadata -- title, creator, duration and chapters -- without '
-  + 'downloading anything heavy; pass returnVideo: true per item when you want the media '
-  + 'file. analyze_video does the real work: transcript plus important, deduplicated '
-  + 'keyframes. Both take a videos array (one item is the common case) and write output '
-  + 'to a directory you choose (destinationPath), returning a compact summary plus file '
-  + 'paths rather than dumping everything into the conversation. Both also support MCP '
-  + 'background tasks: called as a task, they return a handle immediately and push '
-  + 'status notifications while the work runs -- useful because a full analysis of a '
-  + 'long video takes minutes. A good habit on a long video is to call resolve_video '
-  + 'first, read the chapter list, then analyze only the section that matters. Pass your own '
-  + 'callId on either tool and get_status hands that call\'s result back later -- which is how '
-  + 'you recover work when your environment stops waiting for a long call.';
+  'Video extraction for AI agents. resolve_video looks a video up and by default returns '
+  + 'only metadata -- title, creator, duration, chapters -- without downloading anything; '
+  + 'analyze_video does the real work, returning a transcript plus important, deduplicated '
+  + 'keyframes. Both write output to a directory you choose and reply with a compact '
+  + 'summary plus file paths rather than dumping everything into the conversation, and both '
+  + 'can run as background tasks. get_status retrieves an earlier call by the callId you '
+  + 'gave it. On a long video, call resolve_video first, read the chapters, then analyze '
+  + 'only the section that matters.';
 
 const analyzeItemSchema = z.object({
   pathOrUrl: z.string().describe('A video URL, or a path to a video file already on this machine. Both are accepted.'),
@@ -109,46 +91,25 @@ const analyzeItemSchema = z.object({
 // already supplies that default deeper in the pipeline, so an omitted
 // maxFrames still behaves as 35 without the schema needing to duplicate it.
 const ANALYZE_DESCRIPTION =
-  'Given video URLs or local video files, returns for each its transcript and a small '
-  + 'set of important, deduplicated keyframes -- not every frame, just the ones that '
-  + 'carry information (scene changes, on-screen text, visual novelty). Output is '
-  + 'written to destinationPath: per video a manifest, the transcript, and the frame '
-  + 'images; the reply is one compact summary per video plus those paths, with a '
-  + 'transcript included inline when it is short. The transcript comes from the '
-  + "platform's own captions whenever the video has any -- human-written ones first, "
-  + "otherwise the platform's automatic ones -- and speech is transcribed locally only "
-  + 'for videos with no captions at all; transcript.source tells you which you got. '
-  + 'A transcript-only request (frames: "none", no start/end) on a video that has '
-  + 'captions never downloads the video at all -- it reads the captions and stops, '
-  + 'which is the difference between seconds and minutes on a long video. '
-  + BATCHING + ' Use start/end per item to analyze only part of a video -- for supported '
-  + 'sources only that section is downloaded, and the transcript covers just that '
-  + 'section (the single-instant recipe below is the one exception: nothing is trimmed '
-  + 'there, so a transcript, if requested, covers the whole video). frames controls how '
-  + 'frames are chosen per item; for a single exact frame, set start and end to the same '
-  + 'second with frames: "even", maxFrames: 1 and transcript: false. On failure an item '
-  + 'returns a status that is not "ok" with a readable reason, rather than throwing -- '
-  + 'always check each item\'s status first. One status is worth special-casing: '
-  + '"rate_limited" means the platform served metadata but refused the media, which is '
-  + 'nearly always temporary -- pause and retry rather than treating it as a permanent '
-  + 'failure, and space out repeated requests for the same video. Such a failure may also carry '
-  + 'suggestedCommand: a command that would let this server sign in using the browser cookies '
-  + 'already on this machine. NEVER run it without asking the user first -- it grants access to '
-  + 'their browser session, and on some systems triggers an OS keychain prompt they must approve. '
-  + 'Also check its warnings: any optional stage '
-  + 'that failed and was skipped past records an entry there, so an empty transcript can '
-  + 'be told apart from a video that simply has no speech. Called as a background task, '
-  + 'this returns a handle immediately; progress arrives as status messages like '
-  + '"video 2/3: transcribing" or "queued, 1 ahead" (analyses run through a concurrency '
-  + 'pool, default 4 at once, VIDEO_EXTRACT_MAX_CONCURRENCY to change; ~1.1 GB peak per '
-  + 'concurrent analysis, so total footprint is about concurrency x 1.1 GB -- plan for '
-  + '~4.5 GB at the default cap of 4, and VIDEO_EXTRACT_MAX_CONCURRENCY=1 restores the '
-  + 'old flat under-2GB behavior). A queued task can be cancelled; a task '
-  + 'whose work has already started cannot -- it will refuse, finish, and deliver its '
-  + 'result. ' + STATUS_NOTE + ' ' + LIFETIME + " Each item's result also carries videoPath, the local file it "
-  + 'worked from, which you can pass straight back in to inspect another moment without '
-  + 're-downloading -- present whenever a media file was actually fetched, and absent '
-  + 'when the item needed none (the caption-only case above). ' + TIMEOUT_RECOVERY + ' ' + PLATFORMS;
+  'Use this to read a video: it returns a transcript and a small set of important, '
+  + 'deduplicated keyframes rather than every frame. Output goes to destinationPath -- read '
+  + 'the returned paths; only a short transcript comes back inline. '
+  + 'Each item returns { status, title, duration, frameCount, framePaths, manifestPath, '
+  + 'transcriptPath?, transcript?, videoPath?, warnings }. '
+  + BATCHING + ' '
+  + 'To analyze part of a video, pass start and end. For a single exact frame, pass the same '
+  + 'second as both, with frames: "even", maxFrames: 1 and transcript: false. For a '
+  + 'transcript alone, pass frames: "none" -- on a video with captions that skips the '
+  + 'download entirely and takes seconds instead of minutes. '
+  + 'Check every item\'s status before using it. On "rate_limited", wait and retry rather '
+  + 'than treating it as permanent, and space out repeated requests for the same video. If '
+  + 'the failure carries suggestedCommand, ASK THE USER before running it -- it gives this '
+  + 'server access to their browser session. Read warnings to tell a stage that failed '
+  + 'apart from a video that genuinely had no speech, and check transcript.source to see '
+  + 'whether the text came from real captions or from local speech recognition. '
+  + 'Pass videoPath back in to inspect another moment without downloading again. '
+  + 'Call it as a background task for anything long; once started, it cannot be cancelled. '
+  + STATUS_NOTE + ' ' + TIMEOUT_RECOVERY + ' ' + LIFETIME + ' ' + PLATFORMS;
 
 const resolveItemSchema = z.object({
   url: z.string().describe('Page or direct video URL.'),
@@ -159,21 +120,22 @@ const resolveItemSchema = z.object({
 });
 
 const RESOLVE_DESCRIPTION =
-  'Looks up videos and writes what it finds to destinationPath. By DEFAULT it returns '
-  + 'metadata only and does NOT download media: per video the title, creator, duration, '
-  + 'chapter list (when the platform provides one), a short description preview, and a '
-  + 'path to the full metadata file. That is the cheap way to decide what to do next. '
-  + "Set returnVideo: true on an item to also download that video's media file -- a "
-  + 'real download that takes real time. With returnVideo: true you may also pass '
-  + 'start/end (both together; either alone is ignored and fetches the whole video) to '
-  + 'fetch only a section; for supported sources only that section is downloaded, and a '
-  + 'fetched clip STARTS AT 0 rather than at the original timestamp (the result says '
-  + 'so, and gives the offset). ' + BATCHING + ' Use this tool when you only need to know '
-  + 'what videos are, or when you want video files without any analysis. Called as a '
-  + 'background task it returns a handle immediately and reports status while it runs; '
-  + 'resolve work is never queued behind analyses. ' + STATUS_NOTE + ' ' + LIFETIME + ' ' + PLATFORMS + ' Comments are '
-  + 'off by default and can be slow to fetch on popular videos; when enabled they are '
-  + 'written to the metadata file, never returned inline.' + ' ' + TIMEOUT_RECOVERY;
+  'Use this to find out what a video IS before spending time on it: by default it downloads '
+  + 'nothing and returns title, creator, duration, chapters, a short description preview and '
+  + 'the path to full metadata. On a long video, call this first and read the chapters, then '
+  + 'analyze only the section that matters. '
+  + 'Each item returns { status, platform, title, creator, duration, chapters, '
+  + 'descriptionPreview, commentCount, metadataPath, videoPath?, clipStart?, clipEnd?, '
+  + 'nextSteps }. '
+  + 'Set returnVideo: true to also download the file -- expect that to take real time. With '
+  + 'it, pass start and end together to fetch only a section; the clip STARTS AT 0, not at '
+  + 'the original timestamp, so use the returned offset when mapping times back. Leave '
+  + 'comments off unless you need them; they are slow on popular videos and go to the '
+  + 'metadata file, never inline. '
+  + BATCHING + ' '
+  + 'Prefer this over analyze_video whenever you only need to know what a video is, or want '
+  + 'the file without analysis. '
+  + STATUS_NOTE + ' ' + TIMEOUT_RECOVERY + ' ' + LIFETIME + ' ' + PLATFORMS;
 
 // Task 6: honest cancellation (spec §8/§13, task-1-report.md's fact (c)).
 // Queued-cancel is enforced here -- inside the pool-wrapped fn, which only
@@ -562,14 +524,13 @@ export function buildServer(opts?: { analyzeSlots?: SlotPool; statusPort?: numbe
     {
       title: 'Get status',
       description:
-        'Retrieve the result of an earlier resolve_video or analyze_video call by the callId you '
-        + 'supplied to it. Use this when your environment stopped waiting for a long call: the work '
-        + 'carries on regardless, and a finished call hands back exactly the reply you would have '
-        + 'received, file paths and all. A call still running comes back with its stage history so you '
-        + 'can see where it is. Pass several ids to check several calls at once. An id this server has '
-        + 'no record of is reported as unknown rather than guessed at -- it may never have existed, may '
-        + 'have expired, or may belong to a server that has since restarted, and this cannot tell those '
-        + 'apart; in that case the files at the destinationPath you passed are the durable result.',
+        'Use this to collect the result of an earlier resolve_video or analyze_video call by '
+        + 'the callId you gave it -- reach for it when your environment stopped waiting for a '
+        + 'long call, since the work carries on regardless. A finished call returns exactly the '
+        + 'reply you would have received; one still running returns its stage history. Pass '
+        + 'several ids to check several calls at once. Treat "unknown" as no answer rather than '
+        + 'a failure -- the id may never have existed, may have expired, or may belong to a '
+        + 'server that has restarted -- and read the files at your destinationPath instead.',
       inputSchema: {
         callIds: z.array(z.string()).min(1).describe('The callId values you supplied to earlier resolve_video or analyze_video calls.'),
       },
