@@ -55,6 +55,19 @@ describe('classifyYtDlpError', () => {
     expect(classifyYtDlpError('ERROR: some new breakage').status).toBe('extractor_failed');
   });
 
+  it('keeps the message readable when --verbose fills stderr with debug noise', () => {
+    // --verbose is added for ranged downloads so ffmpeg's errors are visible;
+    // without filtering, its Python traceback fills the reported tail and
+    // buries the actual failure.
+    const stderr = [
+      'ERROR: something went genuinely wrong',
+      ...Array.from({ length: 40 }, (_, i) => `[debug] noise line ${i} ${'x'.repeat(40)}`),
+      '  File "/opt/homebrew/.../YoutubeDL.py", line 1166, in report_error',
+      '    self.trouble(message)',
+    ].join('\n');
+    expect(classifyYtDlpError(stderr).message).toContain('something went genuinely wrong');
+  });
+
   // Every stderr below is a REAL string this tool produced against YouTube,
   // not an invented one -- the whole point of this group is that the previous
   // classification handed an agent "ffmpeg exited with code 8" and expected it
@@ -102,6 +115,22 @@ describe('classifyYtDlpError', () => {
         "ERROR: Sign in to confirm you're not a bot. Use --cookies-from-browser. HTTP Error 403: Forbidden",
       );
       expect(f.status).toBe('auth_required');
+    });
+
+    it('sees the 403 ffmpeg hides on a RANGED request', () => {
+      // A ranged download is fetched by ffmpeg, and yt-dlp does not forward
+      // ffmpeg's stderr unless verbose -- so the same refusal a whole-video
+      // request reports as "HTTP Error 403" arrived as nothing but "ffmpeg
+      // exited with code 8". Identical circumstances, two different statuses,
+      // and the ranged one never reached the cookie retry.
+      const stderr = [
+        '[debug] Command-line config: [...]',
+        '[info] t7XDdXdap4w: Downloading 1 format(s): 399+251',
+        '[https @ 0x0] HTTP error 403 Forbidden',
+        'Error opening input: Server returned 403 Forbidden (access denied)',
+        'ERROR: ffmpeg exited with code 8',
+      ].join('\n');
+      expect(classifyYtDlpError(stderr).status).toBe('rate_limited');
     });
 
     it('does NOT claim rate limiting for an ffmpeg failure with no 403 anywhere', () => {
@@ -761,4 +790,40 @@ describe('WeChatHeadlessResolver metadata-only mode (returnVideo:false, spec §2
     await w.resolve('https://weixin.qq.com/sph/abc', { workDir: '/tmp', returnVideo: true });
     expect(fetchCalls).toBeGreaterThan(0);
   });
+});
+
+describe('a ranged download asks yt-dlp to show ffmpeg\'s errors', () => {
+  afterEach(() => { vi.mocked(run).mockImplementation(realRun); });
+
+  /** Captures the argv yt-dlp is invoked with, without running anything. */
+  function captureArgs(): { args: string[][] } {
+    const seen: string[][] = [];
+    vi.mocked(run).mockImplementation(async (cmd: string, args: string[]) => {
+      if (cmd !== 'yt-dlp') return realRun(cmd, args);
+      seen.push(args);
+      return { code: 1, stdout: '', stderr: 'ERROR: stopped' };
+    });
+    return { args: seen };
+  }
+
+  it('passes --verbose when a range is requested', async () => {
+    // Without it, ffmpeg does the fetching and yt-dlp swallows its stderr, so
+    // a 403 arrives as nothing but "ffmpeg exited with code 8" -- unreadable,
+    // and invisible to the rate-limit classification that would have made the
+    // cookie retry fire.
+    const c = captureArgs();
+    await new YtDlpResolver().resolve('https://example.invalid/v', {
+      workDir: mkdtempSync(join(tmpdir(), 'vem-rngv-')), returnVideo: true, start: 0, end: 20,
+    });
+    expect(c.args[0]).toContain('--download-sections');
+    expect(c.args[0]).toContain('--verbose');
+  }, 30_000);
+
+  it('does NOT pass --verbose otherwise, keeping ordinary stderr small', async () => {
+    const c = captureArgs();
+    await new YtDlpResolver().resolve('https://example.invalid/v', {
+      workDir: mkdtempSync(join(tmpdir(), 'vem-rngv2-')), returnVideo: true,
+    });
+    expect(c.args[0]).not.toContain('--verbose');
+  }, 30_000);
 });

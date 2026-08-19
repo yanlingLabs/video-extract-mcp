@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -70,5 +70,38 @@ describe.skipIf(!ready)('a failing tesseract call', () => {
 
     expect(err).toContain('present,');
     expect(err).not.toContain('MISSING');
+  }, 60_000);
+});
+
+describe.skipIf(!ready)('where the OCR crop is staged', () => {
+  it('does not depend on os.tmpdir() at all', async () => {
+    // A real run lost all 459 frames with the crop in /tmp: the file was
+    // there, 193101 bytes of it, and tesseract still reported "image file not
+    // found", while the frames in that same directory were read without
+    // trouble. Crops are therefore staged beside the frame -- a directory the
+    // pipeline is demonstrably reading and writing already.
+    //
+    // Pointing TMPDIR somewhere unusable proves the dependency is gone: the
+    // previous implementation wrote there and would fail outright.
+    const d = mkdtempSync(join(tmpdir(), 'vem-ocrstage-'));
+    const video = await makeTestVideo(join(d, 'v.mp4'), 1);
+    const frame = await extractFrame(video, 0.5, join(d, 'f.jpg'));
+
+    const prev = process.env['TMPDIR'];
+    process.env['TMPDIR'] = join(d, 'does', 'not', 'exist');
+    try {
+      const r = await ocrFrame(frame, 'eng');
+      expect(typeof r.content).toBe('string');
+    } finally {
+      if (prev === undefined) delete process.env['TMPDIR']; else process.env['TMPDIR'] = prev;
+    }
+  }, 60_000);
+
+  it('leaves no crop files behind next to the frame', async () => {
+    const d = mkdtempSync(join(tmpdir(), 'vem-ocrclean-'));
+    const video = await makeTestVideo(join(d, 'v.mp4'), 1);
+    const frame = await extractFrame(video, 0.5, join(d, 'f.jpg'));
+    await ocrFrame(frame, 'eng');
+    expect(readdirSync(d).sort()).toEqual(['f.jpg', 'v.mp4']);
   }, 60_000);
 });

@@ -74,7 +74,17 @@ export function classifyYtDlpError(stderr: string): ResolveFailure {
       resolvedBy: 'ytdlp',
     };
   }
-  return { status: 'extractor_failed', message: stderr.slice(-300).trim() || 'yt-dlp failed', resolvedBy: 'ytdlp' };
+  // Debug lines are dropped before the tail is taken: --verbose (added for
+  // ranged downloads above) otherwise fills the last 300 characters with a
+  // Python traceback and buries whatever actually went wrong.
+  const meaningful = stderr.split('\n')
+    .filter((l) => !/^\s*\[debug\]/.test(l) && !/^\s+File "/.test(l) && !/^\s+self\./.test(l))
+    .join('\n');
+  return {
+    status: 'extractor_failed',
+    message: meaningful.slice(-300).trim() || stderr.slice(-300).trim() || 'yt-dlp failed',
+    resolvedBy: 'ytdlp',
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -296,6 +306,22 @@ export class YtDlpResolver implements VideoResolver {
     const wantsRange = wantsDownload && opts.start !== undefined && opts.end !== undefined;
     if (wantsRange) {
       args.push('--download-sections', `*${opts.start}-${opts.end}`, '--force-keyframes-at-cuts');
+      // --verbose ONLY on this path, and only to make failures classifiable.
+      //
+      // A ranged download is fetched by ffmpeg rather than by yt-dlp, and
+      // yt-dlp does not forward ffmpeg's stderr unless verbose. So the same
+      // refusal that a full download reports as "HTTP Error 403: Forbidden"
+      // arrives here as nothing but "ffmpeg exited with code 8" -- reproduced
+      // directly: at verbose level the very same failure shows
+      // "Server returned 403 Forbidden (access denied)" underneath it.
+      //
+      // That mattered twice over. The message was unactionable, AND the
+      // condition never reached classifyYtDlpError's rate-limit branch, so a
+      // ranged request could not be classified as temporary and never
+      // triggered the cookie retry that a whole-video request would have got.
+      // Identical circumstances, two different answers, purely because of
+      // which process did the fetching.
+      args.push('--verbose');
     }
 
     // Comments can be very slow on popular videos (spec §2.1).

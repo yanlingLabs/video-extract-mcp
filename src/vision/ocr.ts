@@ -1,4 +1,5 @@
 import { statSync } from 'node:fs';
+import { dirname } from 'node:path';
 import sharp from 'sharp';
 import { run } from '../util/run.js';
 import type { Candidate } from '../types.js';
@@ -153,8 +154,20 @@ export async function ocrFrame(imagePath: string, langs = 'eng') {
   const bottomBuf = await sharp(imagePath)
     .extract({ left: 0, top: bottomTop, width: w, height: Math.max(1, h - bottomTop) }).png().toBuffer();
 
+  // Crops are staged NEXT TO the frame, not in os.tmpdir().
+  //
+  // A real run lost all 459 frames with the crop written to /tmp: the file
+  // was there, 193101 bytes of it, and tesseract still reported "image file
+  // not found". The frames in that same run were read without trouble by
+  // ffmpeg and sharp -- so the directory holding them demonstrably works for
+  // this process and its children, and a global temp directory demonstrably
+  // did not. Whatever the mechanism (a sandboxed client redirecting /tmp per
+  // process is the likeliest), the fix is to stop depending on a directory
+  // whose meaning varies with how the server was launched, and use the one
+  // the pipeline is already reading and writing successfully.
+  const stageDir = dirname(imagePath);
   const [content, subtitle] = await Promise.all([
-    ocrBuffer(contentBuf, langs), ocrBuffer(bottomBuf, langs),
+    ocrBuffer(contentBuf, langs, stageDir), ocrBuffer(bottomBuf, langs, stageDir),
   ]);
   return { content, subtitle };
 }
@@ -171,11 +184,10 @@ function describeInput(p: string): string {
   }
 }
 
-async function ocrBuffer(buf: Buffer, langs: string): Promise<string> {
+async function ocrBuffer(buf: Buffer, langs: string, stageDir: string): Promise<string> {
   const { writeFile, unlink } = await import('node:fs/promises');
-  const { tmpdir } = await import('node:os');
   const { join } = await import('node:path');
-  const p = join(tmpdir(), `norma-ocr-${process.pid}-${Math.random().toString(36).slice(2)}.png`);
+  const p = join(stageDir, `.norma-ocr-${process.pid}-${Math.random().toString(36).slice(2)}.png`);
   await writeFile(p, buf);
   try {
     // Failures PROPAGATE (spawn error rejects; nonzero exit -- missing
