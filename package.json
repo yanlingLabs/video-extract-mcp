@@ -1,6 +1,6 @@
 {
   "name": "@yanlinglabs/video-extract-mcp",
-  "version": "0.12.3",
+  "version": "0.12.4",
   "description": "MCP server that turns any video URL into a transcript and a small set of important, deduplicated keyframes — locally, with no cloud APIs. Supports YouTube, TikTok, Facebook, WeChat Channels, direct MP4/HLS and generic sites.",
   "main": "dist/mcp.js",
   "bin": {
@@ -83,5 +83,6 @@
   "overrides": {
     "sharp": "^0.35.3",
     "adm-zip": "^0.6.0"
-  }
+  },
+  "mcpName": "io.github.yanlinglabs/video-extract-mcp"
 }

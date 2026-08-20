@@ -4,7 +4,7 @@
 
 Give it a YouTube link, a TikTok, a WeChat Channels share URL, a raw `.mp4`, or a page from a site nobody has heard of. It fetches only what the request actually needs, produces a transcript (real captions when the platform has them, local speech recognition when it does not), and returns a small set of *important* keyframes — deduplicated, scene-aware, and scored — instead of a thousand near-identical stills.
 
-Built for AI agents. Two MCP tools, no cloud, no API keys, no Python.
+Built for AI agents. Three MCP tools, no cloud, no API keys, no Python.
 
 [![npm](https://img.shields.io/npm/v/@yanlinglabs/video-extract-mcp)](https://www.npmjs.com/package/@yanlinglabs/video-extract-mcp)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -14,6 +14,22 @@ Built for AI agents. Two MCP tools, no cloud, no API keys, no Python.
 [![MCP](https://img.shields.io/badge/MCP-server-orange.svg)](https://modelcontextprotocol.io)
 
 ---
+
+## What it can do
+
+**Get the video, from almost anywhere.** Paste a link and it resolves: YouTube, TikTok, Instagram, X, Facebook and Reels, Twitch, Vimeo, Reddit, WeChat Channels, a bare `.mp4` or `.m3u8`, or a page on a site nobody has heard of. Local files work too. Anything unsupported comes back as a clear failure rather than a crash.
+
+From there you choose how much work to pay for:
+
+- **Just look it up.** Title, creator, duration, chapter list, description, comment count — without downloading a byte. On a long video this is how you find the one section worth analysing.
+- **Download the file.** The whole thing, or just seconds 300–420 of it. Where the platform supports ranged fetching, only that section is transferred rather than the full video.
+- **Get a transcript.** Real captions when the platform has them, in any language it publishes; local speech recognition when it has none. The result says which you got. A captions-only request skips the download entirely — seconds instead of minutes.
+- **Get the frames that matter.** Not every Nth frame: scene changes, on-screen text appearing, genuinely new visuals — deduplicated and scored, typically a few dozen for an hour of video. Or uniform sampling, or one exact frame at one exact second, if that is what you need.
+- **Do several at once.** Pass a list of videos and get a result per video; one failing does not sink the rest.
+- **Reach private or rate-limited content.** Point it at your browser's cookies and it can fetch age-restricted, members-only or followers-only media, and shrug off the bot checks that block anonymous downloads.
+- **Run long jobs in the background.** A full analysis of an hour-long video takes minutes; it can run as a background task, report progress over a local HTTP endpoint, and hand back the result even if your client gave up waiting.
+
+Everything happens on your machine. No API key, no upload, no third-party service.
 
 ## Why this exists
 

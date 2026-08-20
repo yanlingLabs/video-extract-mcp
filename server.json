@@ -1,0 +1,43 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.yanlinglabs/video-extract-mcp",
+  "description": "Extract any video from a URL: transcript plus the keyframes that matter, all locally.",
+  "repository": {
+    "url": "https://github.com/yanlingLabs/video-extract-mcp",
+    "source": "github"
+  },
+  "version": "0.12.4",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "@yanlinglabs/video-extract-mcp",
+      "version": "0.12.4",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "VIDEO_EXTRACT_COOKIES_FROM_BROWSER",
+          "description": "Set to 'auto' to borrow browser cookies only when a platform refuses a download (age-restricted, members-only, or bot-checked media).",
+          "isRequired": false,
+          "isSecret": false,
+          "format": "string"
+        },
+        {
+          "name": "VIDEO_EXTRACT_MODELS_DIR",
+          "description": "Where local speech models live. Defaults to ~/.cache/video-extract-mcp/models; they are fetched on demand.",
+          "isRequired": false,
+          "isSecret": false,
+          "format": "string"
+        },
+        {
+          "name": "VIDEO_EXTRACT_MAX_CONCURRENCY",
+          "description": "How many analyses may run at once. Default 4; each costs about 1.1 GB peak.",
+          "isRequired": false,
+          "isSecret": false,
+          "format": "string"
+        }
+      ]
+    }
+  ]
+}

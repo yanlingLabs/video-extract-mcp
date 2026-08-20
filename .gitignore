@@ -16,3 +16,6 @@ experiments/
 
 # Private research notes — never publish
 extract-any-video+key-frames-selection+transcript.md
+
+# MCP registry publisher binary (19MB, fetched on demand)
+mcp-publisher
