@@ -86,7 +86,7 @@ Some clients name that key `servers` or `mcp` instead of `mcpServers`, and some 
 
 ## What it gives you
 
-Three tools: `resolve_video` (metadata, optionally the file), `analyze_video` (transcript plus important keyframes), and `get_status` (collect a result if your client timed the call out — the work finishes regardless).
+Three tools: `resolve_video` (a video's metadata, and the file itself when you ask for it — downloading alone is a perfectly good reason to use this), `analyze_video` (transcript plus the important keyframes), and `get_status` (collect a result if your client timed the call out — the work finishes regardless).
 
 ## Verify it worked
 

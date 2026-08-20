@@ -1,8 +1,12 @@
 # video-extract-mcp
 
-**Turn any video URL into a transcript and the handful of frames that actually matter — locally, from an MCP server your AI agent can call.**
+**Give an AI agent any video link: download the file, read the transcript, or get just the frames that matter — all on your own machine.**
 
-Give it a YouTube link, a TikTok, a WeChat Channels share URL, a raw `.mp4`, or a page from a site nobody has heard of. It fetches only what the request actually needs, produces a transcript (real captions when the platform has them, local speech recognition when it does not), and returns a small set of *important* keyframes — deduplicated, scene-aware, and scored — instead of a thousand near-identical stills.
+Two jobs, and you can use either on its own:
+
+**Get the video.** A YouTube link, a TikTok, a WeChat Channels share URL, a raw `.mp4`, or a page from a site nobody has heard of — it resolves and downloads it, whole or just the section you asked for. If that is all you need, stop there; nothing forces you to analyse anything.
+
+**Or read it.** A transcript (real captions when the platform has them, local speech recognition when it does not) and a small set of *important* keyframes — deduplicated, scene-aware, and scored — instead of a thousand near-identical stills.
 
 Built for AI agents. Three MCP tools, no cloud, no API keys, no Python.
 
@@ -34,9 +38,11 @@ Everything happens on your machine. No API key, no upload, no third-party servic
 
 ## Why this exists
 
-An LLM cannot watch a video. The usual workaround — dump every Nth frame into the context window — burns enormous amounts of context on frames that are 98% identical to the one before, and still misses the slide that changed while nothing else moved.
+Two problems, really. Getting the video at all — every platform hides its media behind a different mechanism, and none of them want a script fetching it. And then reading it: an LLM cannot watch a video, and the usual workaround — dump every Nth frame into the context window — burns enormous amounts of context on frames that are 98% identical to the one before, while still missing the slide that changed when nothing else moved.
 
-`video-extract-mcp` does the selection work first:
+`video-extract-mcp` handles both:
+
+- **Fetching, from almost anywhere.** One resolver chain covers the big platforms, direct media URLs, and generic sites, with ranged fetches where the platform allows them and cookie support for anything that needs a login. Downloading is a complete use of this tool, not a step on the way to something else.
 
 - **Transcript, honestly sourced.** The platform's own captions are used whenever the video has any — human-written first, otherwise the platform's automatic ones. Audio is transcribed locally (Whisper or SenseVoice) only for videos with no captions at all. The result tells you which you got, via `transcript.source`.
 - **Keyframes chosen, not sampled.** Scene-boundary detection, blur/quality filtering, on-screen-text novelty (subtitle-aware, so burned-in captions don't preserve redundant frames), and image-embedding similarity feed an iterative diversity-aware selector.
