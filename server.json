@@ -1,17 +1,17 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.yanlinglabs/video-extract-mcp",
+  "name": "com.yanlinglabs/video-extract-mcp",
   "description": "Extract any video from a URL: transcript plus the keyframes that matter, all locally.",
   "repository": {
     "url": "https://github.com/yanlingLabs/video-extract-mcp",
     "source": "github"
   },
-  "version": "0.12.4",
+  "version": "0.12.5",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "@yanlinglabs/video-extract-mcp",
-      "version": "0.12.4",
+      "version": "0.12.5",
       "transport": {
         "type": "stdio"
       },

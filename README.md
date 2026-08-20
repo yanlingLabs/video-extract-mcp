@@ -12,6 +12,7 @@ Built for AI agents. Three MCP tools, no cloud, no API keys, no Python.
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-blue.svg)](https://www.typescriptlang.org/)
 [![Tests](https://img.shields.io/badge/tests-685%20passing-success.svg)](#testing)
 [![MCP](https://img.shields.io/badge/MCP-server-orange.svg)](https://modelcontextprotocol.io)
+[![MCP Registry](https://img.shields.io/badge/MCP%20Registry-com.yanlinglabs%2Fvideo--extract--mcp-blue.svg)](https://registry.modelcontextprotocol.io/v0/servers?search=video-extract)
 
 ---
 

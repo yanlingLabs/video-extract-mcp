@@ -19,3 +19,6 @@ extract-any-video+key-frames-selection+transcript.md
 
 # MCP registry publisher binary (19MB, fetched on demand)
 mcp-publisher
+
+# MCP registry DNS auth private key -- never commit
+.mcp-dns/
