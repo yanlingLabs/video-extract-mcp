@@ -1,6 +1,6 @@
 {
   "name": "@yanlinglabs/video-extract-mcp",
-  "version": "0.12.6",
+  "version": "0.12.7",
   "description": "Local-first MCP server for video: download any video from almost any URL, or turn it into a transcript and the handful of keyframes that matter. YouTube, TikTok, Instagram, X, Facebook, WeChat Channels, direct MP4/HLS. No cloud, no API keys.",
   "main": "dist/mcp.js",
   "bin": {

@@ -6,12 +6,12 @@
     "url": "https://github.com/yanlingLabs/video-extract-mcp",
     "source": "github"
   },
-  "version": "0.12.6",
+  "version": "0.12.7",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "@yanlinglabs/video-extract-mcp",
-      "version": "0.12.6",
+      "version": "0.12.7",
       "transport": {
         "type": "stdio"
       },
@@ -39,5 +39,27 @@
         }
       ]
     }
-  ]
+  ],
+  "title": "Video Extract",
+  "websiteUrl": "https://github.com/yanlingLabs/video-extract-mcp",
+  "_meta": {
+    "io.modelcontextprotocol.registry/publisher-provided": {
+      "tags": [
+        "video",
+        "video-download",
+        "transcript",
+        "transcription",
+        "keyframes",
+        "speech-recognition",
+        "youtube",
+        "tiktok",
+        "local-first",
+        "media"
+      ],
+      "categories": [
+        "media",
+        "developer-tools"
+      ]
+    }
+  }
 }
