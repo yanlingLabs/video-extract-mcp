@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeAll } from 'vitest';
-import { mkdtempSync, statSync, mkdirSync } from 'node:fs';
+import { describe, it, expect, beforeAll, afterEach } from 'vitest';
+import { mkdtempSync, statSync, mkdirSync, writeFileSync, chmodSync } from 'node:fs';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -89,5 +89,37 @@ describe('ffmpeg layer', () => {
     expect(existsSync(video)).toBe(true);
     expect(statSync(video).size).toBeGreaterThan(0);
     expect(existsSync(audio)).toBe(false);
+  });
+});
+
+describe('extractFrame when ffmpeg exits 0 without writing a frame', () => {
+  // Ubuntu 24.04's ffmpeg 6.1 does this when a seek lands past the last frame
+  // ("Output file is empty, nothing was encoded"); the 8.x this project is
+  // developed on exits non-zero instead. Found by the first CI run on Linux.
+  let prevPath: string | undefined;
+  afterEach(() => { if (prevPath !== undefined) process.env['PATH'] = prevPath; prevPath = undefined; });
+
+  function useSilentFfmpeg(): void {
+    const binDir = mkdtempSync(join(tmpdir(), 'vem-silent-ffmpeg-'));
+    writeFileSync(join(binDir, 'ffmpeg'),
+      '#!/bin/sh\necho "Output file is empty, nothing was encoded (check -ss / -t / -frames parameters if used)" >&2\nexit 0\n');
+    chmodSync(join(binDir, 'ffmpeg'), 0o755);
+    prevPath = process.env['PATH'];
+    process.env['PATH'] = `${binDir}:${prevPath ?? ''}`;
+  }
+
+  it('throws instead of returning the path of a file that was never written', async () => {
+    const out = join(mkdtempSync(join(tmpdir(), 'vem-frame-')), 'f.jpg');
+    useSilentFfmpeg();
+    await expect(extractFrame(sample, 5.99, out)).rejects.toThrow(/nothing was encoded/);
+    expect(existsSync(out)).toBe(false);
+  });
+
+  it('does not take a file left by an earlier call for this call\'s frame', async () => {
+    const out = join(mkdtempSync(join(tmpdir(), 'vem-frame-')), 'f.jpg');
+    writeFileSync(out, 'an older frame');
+    useSilentFfmpeg();
+    await expect(extractFrame(sample, 5.99, out)).rejects.toThrow();
+    expect(existsSync(out)).toBe(false);
   });
 });

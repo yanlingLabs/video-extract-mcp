@@ -1,3 +1,4 @@
+import { existsSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { run } from '../util/run.js';
 
@@ -79,8 +80,18 @@ export async function trim(input: string, start: number, end: number, out: strin
 }
 
 export async function extractFrame(video: string, timestamp: number, out: string) {
+  // Removed first so a file from an earlier call cannot pass for this one's.
+  rmSync(out, { force: true });
   const r = await run('ffmpeg', ['-y', '-ss', String(timestamp), '-i', video, '-frames:v', '1', '-q:v', '3', out]);
   if (r.code !== 0) throw new Error(`extractFrame failed at ${timestamp}: ${r.stderr.slice(-400)}`);
+  // The exit code alone is not enough: Ubuntu 24.04's ffmpeg 6.1 exits 0 when
+  // the seek lands past the last frame and simply writes nothing ("Output file
+  // is empty, nothing was encoded"), where 8.x fails. Callers treat a returned
+  // path as a real frame (getFrame's end-of-file retry, extractCandidates'
+  // skip), so a missing file has to be a failure here.
+  if (!existsSync(out) || statSync(out).size === 0) {
+    throw new Error(`extractFrame produced no frame at ${timestamp}: ${r.stderr.slice(-400)}`);
+  }
   return out;
 }
 
