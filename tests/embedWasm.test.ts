@@ -25,7 +25,7 @@ const images: Record<string, string> = {};
  * (kernel, channel order) visible pixel-for-pixel, and a fixed seed makes a
  * failure reproducible -- sharp's own `noise` option is reseeded every run.
  */
-function noise(width: number, height: number, channels: 3 | 4, seed: number): sharp.Sharp {
+function noise(width: number, height: number, channels: 3 | 4, seed: number): ReturnType<typeof sharp> {
   let a = seed >>> 0;
   const next = () => { a = (a + 0x6d2b79f5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) & 0xff; };
   const data = Buffer.alloc(width * height * channels);
