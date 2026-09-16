@@ -69,17 +69,17 @@ A report that the endpoint is reachable from **off** the host, or that it disclo
 
 Stated here rather than left for you to discover from `npm audit`.
 
-**`sharp` / libvips (CVE-2026-33327, -33328, -35590, -35591 — high).** `@huggingface/transformers` pins `sharp: ^0.34.5`, which carries vulnerable libvips. This is **reachable**: the vision stage calls `RawImage.read()` on JPEG frames that ffmpeg extracted from a downloaded video, so image bytes derived from attacker-influenced media reach that decoder. This repository forces `sharp: ^0.35.3` via an npm `override`, which fixes it for anyone running from source and also removes a duplicate-libvips condition that libvips itself warns "may cause spurious casting failures and mysterious crashes".
+**`sharp` / libvips and libheif (CVE-2026-33327, -33328, -35590, -35591; GHSA-rgj7-g3m4-5g8c — high).** `@huggingface/transformers` pins `sharp: ^0.34.5`, which carries vulnerable libvips. This is **reachable**: the vision stage calls `RawImage.read()` on JPEG frames that ffmpeg extracted from a downloaded video, so image bytes derived from attacker-influenced media reach that decoder. This repository forces `sharp: ^0.35.4` via an npm `override` (0.35.4 carries the libheif fixes), which fixes it for anyone running from source and also removes a duplicate-libvips condition that libvips itself warns "may cause spurious casting failures and mysterious crashes".
 
 **Neither override reaches you if you installed from npm.** npm applies `overrides` only from the root project, so a published package cannot fix its own transitive dependency for consumers — verified by installing the tarball into a clean project and observing the vulnerable copy still present. Until upstream widens those pins, protect yourself by adding the same overrides to *your* project:
 
 ```json
-{ "overrides": { "sharp": "^0.35.3", "adm-zip": "^0.6.0" } }
+{ "overrides": { "sharp": "^0.35.4", "adm-zip": "^0.6.0" } }
 ```
 
-Verified compatible: the full suite passes and SigLIP embeddings are produced normally under 0.35.3.
+Verified compatible: the full suite passes and SigLIP embeddings are produced normally under 0.35.4.
 
-**`adm-zip` <0.6.0 (GHSA-xcpc-8h2w-3j85 — high).** Reached via `@huggingface/transformers` → `onnxruntime-node` → `adm-zip`. `adm-zip@0.6.0` has since been published, and this repository forces it via an npm `override`; `onnxruntime-node` still pins `^0.5.16`, so npm's own suggested fix is to *downgrade* transformers, which this does not do. Exposure was low either way: `adm-zip` appears only in onnxruntime's `postinstall`, opening a NuGet package fetched over HTTPS from Microsoft's CDN — never in the request path where this tool handles untrusted media, and never at runtime. Onnxruntime also bundles prebuilt binaries for every supported platform, so that extraction is a fallback rather than the normal install.
+**`adm-zip` <0.6.0 (GHSA-xcpc-8h2w-3j85 — high).** Reached via `@huggingface/transformers` → `onnxruntime-node` → `adm-zip`. `adm-zip@0.6.0` has since been published, and this repository forces it via an npm `override`; `onnxruntime-node` still pins `^0.5.16`, so npm's own suggested fix is to *downgrade* transformers, which this does not do. Exposure was low either way: `adm-zip` appears only in onnxruntime's `postinstall`, opening a NuGet package fetched over HTTPS from Microsoft's CDN — never in the request path where this tool handles untrusted media, and never at runtime. Onnxruntime also bundles prebuilt binaries for every supported platform, so that extraction is a fallback rather than the normal install. A later advisory (symlink-following extraction) also covers 0.6.0 and has no fixed `adm-zip` release; npm's suggested fix is a newer `@huggingface/transformers` whose onnxruntime no longer uses it, which has not been adopted yet. The exposure is the same install-time-only path.
 
 Neither issue is a vulnerability *in this project's code*, and both are already known — no need to report them. A demonstration that either is exploitable **through this tool** in a way not described above is very much worth reporting.
 
