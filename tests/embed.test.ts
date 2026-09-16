@@ -57,7 +57,7 @@ describe('embedImages temp-directory cleanup (unit -- real fs, mocked worker out
   it('removes its temp directory after a successful call', async () => {
     // Catches a deleted/missing finally block on the happy path: without it,
     // this assertion would find the directory still present.
-    runMock.mockResolvedValueOnce({ code: 0, stdout: JSON.stringify([[0.1, 0.2]]), stderr: '' });
+    runMock.mockResolvedValueOnce({ code: 0, stdout: JSON.stringify({ vectors: [[0.1, 0.2]], fallback: null }), stderr: '' });
     const { embedImages } = await import('../src/vision/embed.js');
     const result = await embedImages(['fake.jpg']);
     expect(result).toEqual([[0.1, 0.2]]);
@@ -84,5 +84,33 @@ describe('embedImages temp-directory cleanup (unit -- real fs, mocked worker out
     await expect(embedImages(['fake.jpg'])).rejects.toThrow();
     expect(capturedDirs).toHaveLength(1);
     expect(existsSync(capturedDirs[0]!)).toBe(false);
+  });
+});
+
+describe('embedImages runtime-fallback warning (unit -- mocked worker outcome)', () => {
+  beforeEach(() => runMock.mockReset());
+
+  it('records the worker\'s fallback reason as one warning and still returns its vectors', async () => {
+    runMock.mockResolvedValueOnce({
+      code: 0,
+      stdout: JSON.stringify({ vectors: [[1, 0], []], fallback: "Cannot find module '../bin/napi-v6/darwin/x64/onnxruntime_binding.node'" }),
+      stderr: '',
+    });
+    const { embedImages } = await import('../src/vision/embed.js');
+    const warnings: string[] = ['earlier warning'];
+    const result = await embedImages(['a.jpg', 'b.jpg'], warnings);
+    expect(result).toEqual([[1, 0], []]);
+    expect(warnings).toHaveLength(2);
+    expect(warnings[0]).toBe('earlier warning');
+    expect(warnings[1]).toContain('WebAssembly');
+    expect(warnings[1]).toContain("Cannot find module '../bin/napi-v6/darwin/x64/onnxruntime_binding.node'");
+  });
+
+  it('records nothing when the native runtime was used', async () => {
+    runMock.mockResolvedValueOnce({ code: 0, stdout: JSON.stringify({ vectors: [[1, 0]], fallback: null }), stderr: '' });
+    const { embedImages } = await import('../src/vision/embed.js');
+    const warnings: string[] = [];
+    await embedImages(['a.jpg'], warnings);
+    expect(warnings).toEqual([]);
   });
 });

@@ -1,13 +1,28 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { SiglipVisionModel, AutoProcessor, RawImage } from '@huggingface/transformers';
-
-const MODEL_ID = 'Xenova/siglip-base-patch16-224';
+import type { EmbedWorkerOutput } from './embed.js';
+import { SIGLIP_MODEL_ID as MODEL_ID, embedWithWasm, ensureSiglipModel, l2normalize, siglipCacheDir } from './embedWasm.js';
 
 async function main(): Promise<void> {
   const listFile = process.argv[2];
   if (!listFile) throw new Error('usage: embedWorker <jsonPathsFile>');
   const paths = JSON.parse(readFileSync(listFile, 'utf8')) as string[];
+
+  // Imported dynamically so a native runtime that cannot load (no binary for
+  // this platform, or one built for a newer OS) lands here instead of killing
+  // the worker: @huggingface/transformers imports onnxruntime-node at the top
+  // of its Node build. Only the import is guarded -- a model download or
+  // inference failure on a working native runtime is not a reason to switch.
+  let tf: typeof import('@huggingface/transformers');
+  try {
+    tf = await import('@huggingface/transformers');
+  } catch (e) {
+    const reason = (e instanceof Error ? e.message : String(e)).split('\n')[0]!;
+    const vectors = await embedWithWasm(paths, await ensureSiglipModel(siglipCacheDir()));
+    write({ vectors, fallback: reason });
+    return;
+  }
+  const { SiglipVisionModel, AutoProcessor, RawImage } = tf;
 
   const processor = await AutoProcessor.from_pretrained(MODEL_ID);
   // MUST be the vision tower read via pooler_output: pipeline('image-feature-extraction')
@@ -27,17 +42,19 @@ async function main(): Promise<void> {
       const inputs = await processor(await RawImage.read(p));
       const res = await model(inputs);
       const tensor = res.pooler_output ?? res.last_hidden_state;
-      const v = Array.from(tensor.data as Float32Array);
       // L2-normalize: src/vision/select.ts's cosine() is a plain dot product,
       // not a true cosine -- it assumes both operands already are unit
       // vectors.
-      const norm = Math.sqrt(v.reduce((s, x) => s + x * x, 0)) || 1;
-      out.push(v.map((x) => x / norm));
+      out.push(l2normalize(Array.from(tensor.data as Float32Array)));
     } catch {
       out.push([]); // keep index alignment with the input list
     }
   }
-  process.stdout.write(JSON.stringify(out));
+  write({ vectors: out, fallback: null });
+}
+
+function write(result: EmbedWorkerOutput): void {
+  process.stdout.write(JSON.stringify(result));
 }
 
 // ESM "is this the entry module" guard: only auto-run main() when this file

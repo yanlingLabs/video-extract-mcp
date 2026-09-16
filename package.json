@@ -16,7 +16,7 @@
   ],
   "type": "module",
   "engines": {
-    "node": ">=26"
+    "node": ">=22.12.0"
   },
   "publishConfig": {
     "access": "public"
@@ -32,7 +32,8 @@
     "preflight": "tsx scripts/preflight.ts",
     "cli": "npm run build && node dist/cli.js",
     "matrix": "tsx scripts/matrix.ts",
-    "prepublishOnly": "npm run build && npm test"
+    "prepublishOnly": "npm run build && npm test",
+    "check:lockfile": "tsx scripts/check-lockfile.ts"
   },
   "keywords": [
     "mcp",
@@ -75,12 +76,13 @@
   "dependencies": {
     "@huggingface/transformers": "^4.2.0",
     "@modelcontextprotocol/sdk": "1.30.0",
+    "onnxruntime-web": "1.26.0-dev.20260416-b7804b056c",
     "sharp": "^0.35.3",
     "sherpa-onnx-node": "^1.13.4",
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@types/node": "^26.2.0",
+    "@types/node": "^22.20.3",
     "tsx": "^4.23.12",
     "typescript": "^5.9.3",
     "vitest": "^5.0.0"

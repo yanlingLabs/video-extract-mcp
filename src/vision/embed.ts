@@ -4,7 +4,20 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { run } from '../util/run.js';
 
-export async function embedImages(paths: string[]): Promise<number[][]> {
+/** What embedWorker.js prints on stdout. */
+export interface EmbedWorkerOutput {
+  vectors: number[][];
+  /** Why the native runtime could not load, when WebAssembly was used instead; null otherwise. */
+  fallback: string | null;
+}
+
+/**
+ * `warnings` receives one entry when the worker had to fall back to the
+ * WebAssembly runtime: same embeddings, several times slower, and a run that
+ * took the slow path should say so (CLAUDE.md, "Degradation must stay
+ * visible").
+ */
+export async function embedImages(paths: string[], warnings: string[] = []): Promise<number[][]> {
   // Nothing to embed: return before touching the filesystem or spawning the
   // worker (tests/embed.test.ts asserts spawn() is never called for this case).
   if (paths.length === 0) return [];
@@ -30,7 +43,11 @@ export async function embedImages(paths: string[]): Promise<number[][]> {
     // identical comment.
     const r = await run(process.execPath, [worker, listFile], { timeoutMs: 20 * 60_000, label: 'embedWorker' });
     if (r.code !== 0) throw new Error(`embed worker failed: ${r.stderr.slice(-400)}`);
-    return JSON.parse(r.stdout) as number[][];
+    const out = JSON.parse(r.stdout) as EmbedWorkerOutput;
+    if (out.fallback !== null) {
+      warnings.push(`embedding used the slower WebAssembly runtime because the native onnxruntime could not load: ${out.fallback}`);
+    }
+    return out.vectors;
   } finally {
     // Same convention as src/vision/ocr.ts's ocrBuffer(): clean up in a
     // finally so a non-zero worker exit or a JSON.parse throw above still

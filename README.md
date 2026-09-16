@@ -490,7 +490,7 @@ npm run matrix    # acceptance matrix (honest about skips)
 
 | | |
 |---|---|
-| Node | ≥ 26 |
+| Node | ≥ 22.12 |
 | System binaries | `ffmpeg`, `ffprobe`, `yt-dlp`, `tesseract` (with `chi_sim` for Chinese OCR) |
 | Models | ~1.5 GB, fetched by `scripts/fetch-models.sh` — Silero VAD, Whisper small, SenseVoice |
 | Platform | Developed on macOS/arm64; nothing is platform-specific by design, but other platforms are untested |

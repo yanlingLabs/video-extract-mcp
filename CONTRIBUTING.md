@@ -18,7 +18,7 @@ Second most valuable: `docs/follow-ups.md` records every deliberately deferred i
 
 ## Setup
 
-Requires **Node >= 26** and four system binaries that cannot come from npm:
+Requires **Node >= 22.12** and four system binaries that cannot come from npm:
 
 ```bash
 brew install ffmpeg yt-dlp tesseract tesseract-lang   # macOS; use your package manager elsewhere
@@ -28,6 +28,8 @@ cd video-extract-mcp
 npm install && npm run build
 npm run preflight          # verifies ffmpeg / ffprobe / yt-dlp / tesseract
 ```
+
+**Changing dependencies on Node 22? Upgrade npm first** (`npm install -g npm@11`). The npm 10 that ships with Node 22 rewrites `package-lock.json` without the other platforms' binaries, which breaks installs everywhere else. `npm run check:lockfile` tells you if that happened, and CI runs it on every pull request.
 
 Speech models (~1.5 GB) are only needed for videos with **no captions at all** — the caption-first policy means most videos never touch them. Fetch them when you want to work on that path:
 

@@ -558,6 +558,19 @@ describe('analyzeVideo -- silent degrades leave a manifest trace (processing.war
     expect(m.processing.warnings.some((w) => w.includes('embedding failed') && w.includes('SIMULATED: embed worker crashed'))).toBe(true);
   }, 120_000);
 
+  it('carries a warning the embedding stage reports (e.g. the WebAssembly fallback) into the manifest', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'norma-e2e-warn-embed-fallback-'));
+    const v = await makeTestVideo(join(dir, 'v.mp4'), 9);
+    vi.mocked(embedImages).mockImplementationOnce(async (paths: string[], warnings?: string[]) => {
+      warnings?.push('SIMULATED: embedding used the slower WebAssembly runtime');
+      return paths.map((_, i) => unitVec(i));
+    });
+    const m = await analyzeVideo(v, { maxFrames: 4, transcript: false, outDir: join(dir, 'out') });
+    expect(m.source.status).toBe('ok');
+    expect(m.frames.length).toBeGreaterThan(0);
+    expect(m.processing.warnings).toContain('SIMULATED: embedding used the slower WebAssembly runtime');
+  }, 120_000);
+
   it('collapses a fully-dead OCR stage into one summary warning while keeping status ok', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'norma-e2e-warn-ocr-'));
     const v = await makeTestVideo(join(dir, 'v.mp4'), 9);

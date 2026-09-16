@@ -9,6 +9,7 @@ npm test                              # full suite; `pretest` runs the build fir
 npm run build                         # tsc -> dist/
 npm run typecheck                     # build + strict pass (tsconfig.typecheck.json)
 npm run preflight                     # verify ffmpeg / ffprobe / yt-dlp / tesseract
+npm run check:lockfile                # the CI guard against npm-10 lockfile damage
 npm run matrix                        # acceptance matrix (see "Honesty" below)
 npm run cli -- <url> [flags]          # CLI; builds first
 ```
@@ -143,6 +144,28 @@ misses. The failure is quiet: the stage degrades, and the only trace is a
 `processing.warnings` entry, so the run still "succeeds" with every embedding
 missing. Any entry point must run `dist/`.
 
+**Image embeddings fall back to WebAssembly only when the native runtime cannot
+load.** `@huggingface/transformers`' Node build imports `onnxruntime-node` at the top,
+and onnxruntime-node 1.24+ ships no Intel Mac binary at all (the older Intel builds
+need libc++ symbols that only arrive in macOS 13; PR #5). So `embedWorker.ts` imports
+transformers dynamically, and only a failure of that import switches it to
+`src/vision/embedWasm.ts`: onnxruntime-web, the same model file in the same cache
+directory, and a `processing.warnings` entry. A model download or inference failure on
+a working native runtime is not a reason to switch. The preprocessing there is a
+re-implementation, pinned pixel-for-pixel against transformers' own by
+`tests/embedWasm.test.ts`; `tests/embedWorkerFallback.integration.test.ts` blocks the
+native binding with an `--import` fixture so the real path runs on any machine.
+Measured: cosine >= 0.995 against native, ~186 ms per image against ~28 ms, ~630 MB
+peak, inside the per-analysis budget. `onnxruntime-web` is a direct dependency pinned
+to exactly the version transformers requires, so npm keeps one copy (a second one is
+~145 MB); bump the two together.
+
+**Regenerate `package-lock.json` only with npm 11 or newer.** npm 10, the one bundled
+with Node 22, rebuilds a lockfile from an existing `node_modules` without the other
+platforms' optional binaries, so installs break everywhere else while the diff looks
+routine (reproduced; it is how PR #5 arrived). `npm run check:lockfile` runs in CI and
+also rejects entries missing `resolved`/`integrity`.
+
 **Degradation must stay visible.** An optional stage that fails and is skipped past
 records a `processing.warnings` entry, so an empty transcript is distinguishable
 from a video with no speech. A stage skipped *by design* (frame-mode short circuits)
@@ -188,7 +211,8 @@ asked to store results.
 
 **`src/types.ts` is the single source of truth** for shared types.
 
-**No Python.** Node 26, ESM, TypeScript strict with `noUncheckedIndexedAccess`.
+**No Python.** Node 22.12+ (CI runs 22 and 26; `@types/node` is held at 22 so an API
+newer than that fails the typecheck), ESM, TypeScript strict with `noUncheckedIndexedAccess`.
 
 ## Domain rules worth knowing before editing
 

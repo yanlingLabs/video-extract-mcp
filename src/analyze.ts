@@ -463,7 +463,7 @@ async function analyzeResolved(
 
     // 6. Embeddings -- STAGE 2 (vision worker; ASR already exited)
     let embedError: string | null = null;
-    const vectors = await embedImages(cands.map((c) => c.imagePath)).catch((e: unknown) => {
+    const vectors = await embedImages(cands.map((c) => c.imagePath), warnings).catch((e: unknown) => {
       embedError = e instanceof Error ? e.message : String(e);
       return [] as number[][];
     });

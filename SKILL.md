@@ -15,7 +15,7 @@ Every MCP client needs the same three things. However your client spells it, thi
 
 **`@latest` is load-bearing.** Without it npx pins to the first version it cached and never updates again.
 
-Prerequisites, which cannot come from npm: `ffmpeg`, `yt-dlp`, `tesseract` (`brew install ffmpeg yt-dlp tesseract tesseract-lang`, or your platform's package manager). Node >= 26.
+Prerequisites, which cannot come from npm: `ffmpeg`, `yt-dlp`, `tesseract` (`brew install ffmpeg yt-dlp tesseract tesseract-lang`, or your platform's package manager). Node >= 22.12.
 
 ## `mcp add` is a common shape, not a standard
 
