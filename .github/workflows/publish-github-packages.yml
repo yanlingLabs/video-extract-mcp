@@ -1,0 +1,31 @@
+name: Publish to GitHub Packages
+
+# npmjs.com stays the primary registry (published by hand, `npm publish`).
+# This mirrors each GitHub release to GitHub Packages with the workflow's own
+# token, so no personal token with write:packages is needed.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+          registry-url: https://npm.pkg.github.com
+          scope: '@yanlinglabs'
+      - run: npm ci
+      - run: npm run build
+      # --ignore-scripts skips prepublishOnly: the full suite already ran in CI
+      # for this commit, and it needs system binaries this job doesn't install.
+      - run: npm publish --ignore-scripts
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
