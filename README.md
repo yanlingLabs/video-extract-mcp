@@ -12,9 +12,9 @@ Built for AI agents. Three MCP tools, no cloud, no API keys, no Python.
 
 [![npm](https://img.shields.io/npm/v/@yanlinglabs/video-extract-mcp)](https://www.npmjs.com/package/@yanlinglabs/video-extract-mcp)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Node](https://img.shields.io/badge/node-%E2%89%A526-brightgreen.svg)](https://nodejs.org)
+[![Node](https://img.shields.io/badge/node-%E2%89%A522.12-brightgreen.svg)](https://nodejs.org)
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-blue.svg)](https://www.typescriptlang.org/)
-[![Tests](https://img.shields.io/badge/tests-685%20passing-success.svg)](#testing)
+[![CI](https://github.com/yanlingLabs/video-extract-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/yanlingLabs/video-extract-mcp/actions/workflows/ci.yml)
 [![MCP](https://img.shields.io/badge/MCP-server-orange.svg)](https://modelcontextprotocol.io)
 [![MCP Registry](https://img.shields.io/badge/MCP%20Registry-com.yanlinglabs%2Fvideo--extract--mcp-blue.svg)](https://registry.modelcontextprotocol.io/v0/servers?search=video-extract)
 
