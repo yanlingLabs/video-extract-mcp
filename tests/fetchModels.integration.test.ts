@@ -73,6 +73,9 @@ async function fakeRelease(opts: { truncate?: boolean; omit?: string } = {}): Pr
       const a = server!.address();
       const base = `http://127.0.0.1:${typeof a === 'object' && a ? a.port : 0}`;
       setEnv('VIDEO_EXTRACT_MODELS_BASE_URL', base);
+      // vitest.config.ts turns fetching off suite-wide; a fake host is the one
+      // place it is safe to turn back on.
+      setEnv('VIDEO_EXTRACT_AUTO_FETCH_MODELS', '1');
       resolve(base);
     });
   });

@@ -37,7 +37,7 @@ jobs:
           cache: npm
       - name: System binaries (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg tesseract-ocr tesseract-ocr-chi-sim
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg tesseract-ocr tesseract-ocr-chi-sim fonts-noto-cjk
       - name: System binaries (macOS)
         if: runner.os == 'macOS'
         run: brew install ffmpeg tesseract tesseract-lang

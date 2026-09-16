@@ -398,20 +398,24 @@ describe('video-extract status CLI', () => {
     let stdout = '';
     child.stdout.on('data', (d: Buffer) => { stdout += d.toString('utf8'); });
 
+    let exited = false;
+    child.on('exit', () => { exited = true; });
+
     try {
-      // The observation window itself -- WATCH_INTERVAL_MS is 1000ms, so
-      // ~2.5s real wall-clock time genuinely elapsing is what "does it
-      // loop more than once" means here, not something to poll around.
-      await new Promise((resolve) => { setTimeout(resolve, 2_500); });
       // Every render is preceded by the ANSI full-reset byte sequence
       // ('\x1Bc', gated to non-json renders) -- counting its occurrences
-      // in the raw piped stdout counts renders. One-sided assertion
-      // (>= 2, not an exact count) so scheduler/load variance can't flake
-      // this: a single render (the pre-fix bug) is 1, not >= 2, so the
-      // bug this guards against is caught regardless of exactly how many
-      // ticks a loaded machine manages in 2.5s.
-      const renderCount = stdout.split('\x1Bc').length - 1;
-      expect(renderCount).toBeGreaterThanOrEqual(2);
+      // in the raw piped stdout counts renders. WATCH_INTERVAL_MS is 1000ms,
+      // so a second render still means real time genuinely elapsed inside a
+      // living loop. Wait for it, or for the process to exit (the pre-fix
+      // bug: one render, then exit in ~0.07s), rather than for a fixed 2.5s:
+      // a loaded CI runner spent more than 1.5s just starting the CLI and
+      // saw one render in that window.
+      const renders = () => stdout.split('\x1Bc').length - 1;
+      const deadline = Date.now() + 10_000;
+      while (renders() < 2 && !exited && Date.now() < deadline) {
+        await new Promise((resolve) => { setTimeout(resolve, 50); });
+      }
+      expect(renders()).toBeGreaterThanOrEqual(2);
     } finally {
       child.kill('SIGKILL');
     }

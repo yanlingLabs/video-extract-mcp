@@ -16,6 +16,12 @@ export default defineConfig({
       // their OWN isolated cache dir (tests/statusDiscovery.test.ts) still
       // override it per-test with vi.stubEnv, which wins over this default.
       VIDEO_EXTRACT_CACHE_DIR: join(tmpdir(), 'video-extract-mcp-test-cache'),
+      // Never download the real ~1.5 GB speech models from a test. On a
+      // machine without them (every CI runner), any test that reached the ASR
+      // stage used to fetch and unpack Whisper inside its own timeout, and
+      // failed whenever the runner was slow. Tests of the fetch itself opt
+      // back in against a local fake host (tests/fetchModels.integration.test.ts).
+      VIDEO_EXTRACT_AUTO_FETCH_MODELS: '0',
     },
   },
 });
