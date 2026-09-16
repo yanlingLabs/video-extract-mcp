@@ -504,7 +504,7 @@ Nothing in this code is platform-specific by design, but the native libraries it
 | Platform | Status |
 |---|---|
 | macOS, Apple Silicon | Developed and tested here. The speech-recognition library's bundled runtime declares macOS 15.5 as its minimum; older versions are untested. |
-| macOS, Intel | `onnxruntime-node` has shipped no Intel Mac binary since 1.24, so image embeddings run on a WebAssembly fallback: the same results, several times slower, noted in `processing.warnings`. Local speech recognition needs macOS 15. Not yet run on real Intel hardware. |
+| macOS, Intel | `onnxruntime-node` has shipped no Intel Mac binary since 1.24, so image embeddings run on a WebAssembly fallback: near-identical results, several times slower, noted in `processing.warnings`. Local speech recognition needs macOS 15. Not yet run on real Intel hardware. |
 | macOS 12 | See below. |
 | Linux (glibc) | The test suite runs there in CI; no live runs reported yet. |
 | Windows | Untested. |

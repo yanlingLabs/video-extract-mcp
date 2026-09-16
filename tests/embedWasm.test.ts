@@ -197,10 +197,12 @@ describe('embedWithWasm (real model)', () => {
     for (let i = 0; i < names.length; i++) {
       expect(wasm[i]).toHaveLength(768);
       expect(Math.hypot(...wasm[i]!)).toBeCloseTo(1, 3);
-      expect(agreement[i]).toBeGreaterThan(0.95);
+      expect(agreement[i]).toBeGreaterThan(0.99);
     }
     // What the frame selector consumes is similarity between frames.
-    expect(pairGap).toBeLessThan(0.05);
+    // Measured on these scenes (CI, 2026-09-16): cosine >= 0.9976 and gap
+    // 0.009 on linux/x64, cosine >= 0.9967 and gap 0.017 on darwin/arm64.
+    expect(pairGap).toBeLessThan(0.03);
     // Different images must stay distinguishable, not collapse to one vector.
     expect(dot(wasm[0]!, wasm[1]!)).toBeLessThan(0.95);
   }, 600_000);

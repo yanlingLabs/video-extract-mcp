@@ -17,10 +17,12 @@ import { sweepModelFetchLitter } from '../transcript/fetchModels.js';
  * touches transformers: the preprocessing is re-implemented below, and
  * tests/embedWasm.test.ts pins it pixel-for-pixel against transformers' own.
  *
- * Measured against the native path on the same images (2026-09-16, Apple
- * Silicon): cosine >= 0.995 per image, pairwise similarity within 0.01,
- * ~186 ms per image vs ~28 ms, ~630 MB peak RSS. Slower but equivalent, so
- * it is a fallback with a processing.warnings entry, never the default.
+ * Measured against the native path on picture-like images (2026-09-16):
+ * cosine >= 0.9967 per image and pairwise similarity within 0.02 on Apple
+ * Silicon, >= 0.9976 and within 0.01 on Linux x64 (CI). Pure noise agrees
+ * less (0.976 was seen on Linux x64). ~186 ms per image vs ~28 ms, ~630 MB
+ * peak RSS on Apple Silicon. Slower but near-identical, so it is a fallback
+ * with a processing.warnings entry, never the default.
  */
 
 export const SIGLIP_MODEL_ID = 'Xenova/siglip-base-patch16-224';

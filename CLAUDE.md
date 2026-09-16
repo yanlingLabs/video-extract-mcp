@@ -155,8 +155,10 @@ a working native runtime is not a reason to switch. The preprocessing there is a
 re-implementation, pinned pixel-for-pixel against transformers' own by
 `tests/embedWasm.test.ts`; `tests/embedWorkerFallback.integration.test.ts` blocks the
 native binding with an `--import` fixture so the real path runs on any machine.
-Measured: cosine >= 0.995 against native, ~186 ms per image against ~28 ms, ~630 MB
-peak, inside the per-analysis budget. `onnxruntime-web` is a direct dependency pinned
+Measured on picture-like images: cosine >= 0.996 against native and frame-to-frame
+similarity within 0.02, on Apple Silicon and Linux x64 (random noise agrees less, which
+once made this test flaky); ~186 ms per image against ~28 ms, ~630 MB peak, inside the
+per-analysis budget. `onnxruntime-web` is a direct dependency pinned
 to exactly the version transformers requires, so npm keeps one copy (a second one is
 ~145 MB); bump the two together.
 
