@@ -33,7 +33,11 @@ import { run } from '../src/util/run.js';
 
 const FONT = '/System/Library/Fonts/Supplemental/Arial.ttf';
 const tesseractPresent = spawnSync('tesseract', ['--version']).status === 0;
-const ready = tesseractPresent && existsSync(FONT) && existsSync('dist/analyze.js');
+// The fixture draws its text with ffmpeg's drawtext filter, which not every
+// build has: Homebrew's ffmpeg 9 dropped it (the macOS CI runner has no
+// drawtext), so skip rather than fail on a fixture that cannot be built.
+const drawtextPresent = / drawtext /.test(spawnSync('ffmpeg', ['-hide_banner', '-filters'], { encoding: 'utf8' }).stdout ?? '');
+const ready = tesseractPresent && drawtextPresent && existsSync(FONT) && existsSync('dist/analyze.js');
 
 const CONTENT_A = 'GRADIENT DESCENT CONVERGES';
 const CONTENT_B = 'EIGENVALUE SPECTRUM SHIFTED';

@@ -37,10 +37,10 @@ jobs:
           cache: npm
       - name: System binaries (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg tesseract-ocr
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg tesseract-ocr tesseract-ocr-chi-sim
       - name: System binaries (macOS)
         if: runner.os == 'macOS'
-        run: brew install ffmpeg tesseract
+        run: brew install ffmpeg tesseract tesseract-lang
       - run: npm ci
       - run: npm run typecheck
       # Tests that need the ~1.5 GB speech models skip themselves; check the
