@@ -66,7 +66,7 @@ describe.skipIf(!ready)('embedImages reports the fallback as a processing warnin
   });
 
   it('adds one warning naming WebAssembly and the load error', async () => {
-    process.env['NODE_OPTIONS'] = BLOCK_NATIVE;
+    process.env['NODE_OPTIONS'] = prev ? `${prev} ${BLOCK_NATIVE}` : BLOCK_NATIVE;
     const { embedImages } = await import('../dist/vision/embed.js');
     const warnings: string[] = [];
     const vectors = await embedImages([red, blue], warnings);
