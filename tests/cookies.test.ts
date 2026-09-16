@@ -1,6 +1,6 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import {
-  mkdtempSync, writeFileSync, readFileSync, existsSync, chmodSync, readdirSync,
+  mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync, readdirSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -135,7 +135,20 @@ afterEach(() => {
     if (v === undefined) delete process.env[k]; else process.env[k] = v;
   }
   prevPath = prevFile = prevBrowser = undefined;
+  vi.unstubAllEnvs();
 });
+
+/**
+ * `auto` only acts when detectBrowser() finds a browser profile under HOME,
+ * so a test of what `auto` does must supply one: a CI runner has no browser
+ * profile, and these tests failed there while passing on any desktop.
+ */
+function useHomeWithBrowser(): void {
+  const home = mkdtempSync(join(tmpdir(), 'vem-home-'));
+  const profile = process.platform === 'darwin' ? 'Library/Application Support/Chromium' : '.config/chromium';
+  mkdirSync(join(home, profile), { recursive: true });
+  vi.stubEnv('HOME', home);
+}
 
 function stubEnv(file?: string, browser?: string): void {
   prevFile = process.env['VIDEO_EXTRACT_COOKIES_FILE'];
@@ -299,6 +312,7 @@ describe('the lazy retry', () => {
   it('retries once with browser cookies after a refusal, and succeeds', async () => {
     const f = refusingUnlessCookies();
     stubEnv(undefined, 'auto');
+    useHomeWithBrowser();
     const r = await new YtDlpResolver().resolve('https://example.invalid/v', { workDir: f.workDir, returnVideo: false });
 
     const calls = readFileSync(f.log, 'utf8').trim().split('\n');
@@ -345,6 +359,7 @@ describe('the suggestion when nothing is configured', () => {
     prevPath = process.env['PATH'];
     process.env['PATH'] = `${binDir}:${prevPath ?? ''}`;
     stubEnv();
+    useHomeWithBrowser();
 
     const r = await new YtDlpResolver().resolve('https://example.invalid/v', { workDir, returnVideo: false });
     const f = r as { status: string; message: string; suggestedCommand?: string };
