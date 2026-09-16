@@ -32,8 +32,9 @@
     "preflight": "tsx scripts/preflight.ts",
     "cli": "npm run build && node dist/cli.js",
     "matrix": "tsx scripts/matrix.ts",
-    "prepublishOnly": "npm run build && npm test",
-    "check:lockfile": "tsx scripts/check-lockfile.ts"
+    "prepublishOnly": "npm run clean && npm run build && npm test",
+    "check:lockfile": "tsx scripts/check-lockfile.ts",
+    "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\""
   },
   "keywords": [
     "mcp",
