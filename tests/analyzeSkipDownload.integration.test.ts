@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { mkdtempSync, writeFileSync, existsSync, readFileSync, chmodSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -77,6 +77,7 @@ afterEach(() => {
   if (prevModels === undefined) delete process.env.VIDEO_EXTRACT_MODELS_DIR;
   else process.env.VIDEO_EXTRACT_MODELS_DIR = prevModels;
   prevPath = undefined; prevModels = undefined;
+  vi.unstubAllEnvs();
 });
 
 function usePath(binDir: string): void {
@@ -84,10 +85,15 @@ function usePath(binDir: string): void {
   process.env.PATH = `${binDir}:${prevPath ?? ''}`;
 }
 
-/** Points ASR at an empty directory so it fails fast instead of loading ~1.5 GB. */
+/**
+ * Points ASR at an empty directory so it fails fast instead of loading ~1.5 GB.
+ * Auto-fetch goes off too: since models are fetched on demand, an empty
+ * directory alone made these tests download Whisper until they timed out.
+ */
 function useNoModels(): void {
   prevModels = process.env.VIDEO_EXTRACT_MODELS_DIR;
   process.env.VIDEO_EXTRACT_MODELS_DIR = join(mkdtempSync(join(tmpdir(), 'vem-nomodels-')), 'absent');
+  vi.stubEnv('VIDEO_EXTRACT_AUTO_FETCH_MODELS', '0');
 }
 
 const URL = 'https://example.invalid/watch?v=abc';
