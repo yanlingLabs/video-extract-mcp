@@ -493,9 +493,35 @@ npm run matrix    # acceptance matrix (honest about skips)
 | Node | ≥ 22.12 |
 | System binaries | `ffmpeg`, `ffprobe`, `yt-dlp`, `tesseract` (with `chi_sim` for Chinese OCR) |
 | Models | ~1.5 GB, fetched by `scripts/fetch-models.sh` — Silero VAD, Whisper small, SenseVoice |
-| Platform | Developed on macOS/arm64; nothing is platform-specific by design, but other platforms are untested |
+| Platform | Developed on macOS/arm64; see [Platform support](#platform-support) |
 
 Speech recognition routes by language: `zh`, `yue`, `ja`, `ko` → SenseVoice; everything else → Whisper. There is no audio-based language detection, because the installed library returns a constant value regardless of what is actually spoken — supply `language` when you know it.
+
+## Platform support
+
+Nothing in this code is platform-specific by design, but the native libraries it runs on are, and they set the limits:
+
+| Platform | Status |
+|---|---|
+| macOS, Apple Silicon | Developed and tested here. The speech-recognition library's bundled runtime declares macOS 15.5 as its minimum; older versions are untested. |
+| macOS, Intel | `onnxruntime-node` has shipped no Intel Mac binary since 1.24, so image embeddings run on a WebAssembly fallback: the same results, several times slower, noted in `processing.warnings`. Local speech recognition needs macOS 15. Not yet run on real Intel hardware. |
+| macOS 12 | See below. |
+| Linux (glibc) | The test suite runs there in CI; no live runs reported yet. |
+| Windows | Untested. |
+
+### macOS 12 (Monterey)
+
+A contributor ran the pipeline on macOS 12.7.6 (Intel) and documented what it takes ([#5](https://github.com/yanlingLabs/video-extract-mcp/pull/5)). Their setup patched onnxruntime's binary; this release uses the WebAssembly fallback instead, which has not been run on macOS 12 yet.
+
+- **Node 22, not 26.** Node 26 can't start on macOS 12: its binary needs a libc++ symbol that macOS 12 doesn't export.
+  ```
+  dyld: Symbol not found: (__ZNSt3__122__libcpp_verbose_abortEPKcz)
+    Expected in: /usr/lib/libc++.1.dylib
+  ```
+  This package supports Node 22.12 and later, so use the latest Node 22 (`nvm install 22`).
+- **Image embeddings need the fallback.** onnxruntime's older Intel binaries were built against a newer libc++ than macOS 12 has, so they fail to load (`Symbol not found: __ZNSt3__18to_charsEPcS0_d`), and the current version has no Intel binary at all. The fallback doesn't use the native library.
+- **No local speech recognition** for videos without captions: sherpa-onnx's Intel build needs macOS 15. Captioned videos work.
+- **No OCR.** Homebrew has no tesseract bottle for Monterey (`brew install --force-bottle tesseract` answers `` `--force-bottle` passed but tesseract has no bottle! ``), and building it from source means compiling its whole dependency tree. Frames still come back with their embeddings, scenes and transcript windows, and `processing.warnings` carries `ocr unavailable: ... spawn tesseract ENOENT`; only text burned into the picture (and the WeChat Channels OCR path) is lost.
 
 ## License
 
