@@ -90,7 +90,7 @@
   },
   "overrides": {
     "sharp": "^0.35.4",
-    "adm-zip": "^0.6.0"
+    "adm-zip": "^0.6.1"
   },
   "mcpName": "com.yanlinglabs/video-extract-mcp"
 }
