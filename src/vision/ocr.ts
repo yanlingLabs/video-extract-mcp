@@ -98,14 +98,23 @@ export function textDelta(a: string, b: string): number {
 // new one.
 const SUBTITLE_DISCOUNT = 0.1;   // spec §13: overlays must not rescue redundant frames
 
+const hasTokens = (s: string | undefined): boolean => normalizeText(s ?? '') !== '';
+
 export function computeTextNovelty(cands: Candidate[]): Candidate[] {
   return cands.map((c, i) => {
     if (i === 0) return { ...c, textNovelty: 0 };
     const prev = cands[i - 1]!;
     const next = cands[i + 1]; // undefined when c is the last candidate
 
-    const contentDeltaIn = textDelta(prev.ocrContent ?? '', c.ocrContent ?? '');
-    const subtitleDelta = textDelta(prev.ocrSubtitle ?? '', c.ocrSubtitle ?? '');
+    // Novelty is about text this frame SHOWS. textDelta is symmetric, so on
+    // its own it scores text vanishing (prev had text, c has none) as a full
+    // change -- which labelled the frame AFTER a flashed overlay as
+    // `new_text` and ranked it above the frame that actually carried the
+    // text. Measured on a real music video: 14 of 35 selected frames were
+    // tagged new_text and not one of them had any text on it. A frame with
+    // no text in a region has no new text there, whatever came before.
+    const contentDeltaIn = hasTokens(c.ocrContent) ? textDelta(prev.ocrContent ?? '', c.ocrContent ?? '') : 0;
+    const subtitleDelta = hasTokens(c.ocrSubtitle) ? textDelta(prev.ocrSubtitle ?? '', c.ocrSubtitle ?? '') : 0;
 
     // Persistence-aware discount (spec §13, review round 2 finding 2):
     // spatial discounting alone can't tell an upper-third caption that
