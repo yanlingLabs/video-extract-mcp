@@ -15,13 +15,17 @@ import { join } from 'node:path';
  * different protocol with its own credential (VIDEO_EXTRACT_WECHAT_COOKIE),
  * and conflating the two would send one platform's credential to another.
  *
- * ## Environment only, never per-request
+ * ## Never named by the caller
  *
- * The source is read from the environment and can never be supplied by a
- * caller. An agent that could name a cookie file could point this at any
- * readable path on the machine and have its contents sent to a remote host;
- * an agent that could name a browser could exfiltrate a live session. The
- * operator configures credentials, the caller does not.
+ * The standing source is read from the environment, and a caller can never
+ * name a cookie file or a browser. An agent that could name a file could
+ * point this at any readable path on the machine and have its contents sent
+ * to a remote host; one that could name a browser profile could pick any
+ * session on it. What a caller CAN do is pass `userCookies: true`, which
+ * means only "the user said yes to their own default browser, for this
+ * call" (src/util/browsers.ts). yt-dlp's jar is scoped by domain, so those
+ * cookies go only to the site that set them; and the tool descriptions
+ * require the agent to ask the user first, every time.
  */
 
 export type CookieSource =
@@ -218,28 +222,4 @@ export function prepareCookies(source: CookieSource): PreparedCookies {
  */
 export function retryBrowserFor(source: CookieSource): string | null {
   return source.kind === 'auto' ? detectBrowser() : null;
-}
-
-/**
- * What to tell a caller that hit a refusal with no cookies configured.
- *
- * A suggestion, never an action: enabling this reads the user's browser
- * credentials, which is theirs to allow. The Keychain warning is included
- * because it is the surprising part -- macOS prompts on first read for every
- * Chrome-family browser, and a prompt nobody predicted looks like malware.
- */
-export function cookieSuggestion(): { message: string; command: string } | null {
-  const browser = detectBrowser();
-  if (!browser) return null;
-  return {
-    command: 'claude mcp add --scope user video-extract '
-      + '-e VIDEO_EXTRACT_COOKIES_FROM_BROWSER=auto -- npx -y @yanlinglabs/video-extract-mcp',
-    message: `Signing in usually clears this. Setting VIDEO_EXTRACT_COOKIES_FROM_BROWSER=auto lets this `
-      + `server borrow cookies from ${browser} ONLY when a request is refused like this one -- not on `
-      + 'ordinary requests. The command below re-registers the server with that setting for Claude Code '
-      + '(adapt it for another MCP client); restart the client afterwards. Note that the first time '
-      + 'cookies are read from a Chrome-family browser, macOS shows a Keychain prompt that must be '
-      + 'approved, and that borrowing cookies from a browser you are signed into can eventually sign '
-      + 'you out of that site.',
-  };
 }

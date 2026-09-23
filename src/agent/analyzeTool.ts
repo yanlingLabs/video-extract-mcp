@@ -1,6 +1,6 @@
 import { mkdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import type { AnalyzeStage, FrameMode, Manifest, Transcript } from '../types.js';
+import type { AnalyzeStage, CookieUse, FrameMode, Manifest, Transcript } from '../types.js';
 import { analyzeVideo } from '../analyze.js';
 import { buildManifest } from '../manifest.js';
 import { writeManifest, writeTranscript } from './artifacts.js';
@@ -23,6 +23,8 @@ export interface AnalyzeItemResult {
   manifestPath: string;
   videoPath?: string;
   warnings: string[];
+  /** What credential was sent (see CookieUse), on every result. */
+  cookies: CookieUse;
 }
 
 export interface AnalyzeVideoItem {
@@ -52,7 +54,8 @@ function isLocalPath(pathOrUrl: string): boolean {
 }
 
 async function analyzeOneVideoAttempt(
-  item: AnalyzeVideoItem, destinationPath: string, onStage?: (stage: AnalyzeStage) => void,
+  item: AnalyzeVideoItem, destinationPath: string, onStage: ((stage: AnalyzeStage) => void) | undefined,
+  userCookies: boolean,
 ): Promise<AnalyzeItemResult> {
   mkdirSync(destinationPath, { recursive: true });
 
@@ -88,6 +91,7 @@ async function analyzeOneVideoAttempt(
       destinationPath,
       onStage,
       outDir: workDir,
+      userCookies,
     });
 
     // Move the deliverables out of the scratch directory: the SELECTED
@@ -129,6 +133,7 @@ async function analyzeOneVideoAttempt(
       manifestPath,
       ...(m.source.filePath ? { videoPath: m.source.filePath } : {}),
       warnings: m.processing.warnings,
+      cookies: m.source.cookies,
     };
   } finally {
     // Every return above is inside the try, and analyzeVideo can also throw
@@ -152,9 +157,10 @@ async function analyzeOneVideoAttempt(
  */
 export async function analyzeOneVideo(
   item: AnalyzeVideoItem, destinationPath: string, onStage?: (stage: AnalyzeStage) => void,
+  userCookies = false,
 ): Promise<AnalyzeItemResult> {
   try {
-    return await analyzeOneVideoAttempt(item, destinationPath, onStage);
+    return await analyzeOneVideoAttempt(item, destinationPath, onStage, userCookies);
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     let manifestPath = join(destinationPath, 'manifest.json');
@@ -174,12 +180,17 @@ export async function analyzeOneVideo(
       status: 'extractor_failed',
       reason: `analyze_video failed: ${message}`,
       title: '', duration: 0, frameCount: 0, framePaths: [],
-      manifestPath, warnings: [],
+      manifestPath, warnings: [], cookies: 'none',
     };
   }
 }
 
-export interface AnalyzeToolArgs { destinationPath: string; videos: AnalyzeVideoItem[]; }
+export interface AnalyzeToolArgs {
+  destinationPath: string;
+  videos: AnalyzeVideoItem[];
+  /** Per call: the user allowed their browser session for this one (ResolveOptions.userCookies). */
+  userCookies?: boolean;
+}
 export interface AnalyzeToolResult { videos: AnalyzeItemResult[]; }
 export interface AnalyzeRunHooks {
   /** Wraps each item's execution -- the MCP layer passes the slot pool here.
@@ -253,7 +264,10 @@ export async function analyzeVideoTool(
           // rejection, silently turning a legitimate analysis into a
           // reported failure. safe() (src/status/context.ts) closes this the
           // same way runWithStatus() already closes the context path.
-          () => analyzeOneVideo(item, itemDir(args.destinationPath, i, n), safe((s: AnalyzeStage) => hooks?.onStage?.(i, s))),
+          () => analyzeOneVideo(
+            item, itemDir(args.destinationPath, i, n), safe((s: AnalyzeStage) => hooks?.onStage?.(i, s)),
+            args.userCookies === true,
+          ),
         );
       },
       (ahead) => hooks?.onQueued?.(i, ahead),

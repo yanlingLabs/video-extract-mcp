@@ -147,6 +147,29 @@ describe('v2 surface', () => {
   });
 });
 
+describe('userCookies', () => {
+  it('is a per-call boolean on both tools, off by default, that tells the agent to ask the user first', async () => {
+    const client = await connectClient(buildServer());
+    const { tools } = await client.listTools();
+    for (const name of ['analyze_video', 'resolve_video']) {
+      const tool = tools.find((t) => t.name === name);
+      if (!tool) throw new Error(`${name} not found in listTools()`);
+      const prop = tool.inputSchema.properties?.userCookies as { type?: string; default?: unknown; description?: string } | undefined;
+      expect(prop?.type).toBe('boolean');
+      expect(prop?.default).toBe(false);
+      // Top level, next to destinationPath: one decision per call, not per item.
+      const items = (tool.inputSchema.properties?.videos as { items?: { properties?: Record<string, unknown> } }).items;
+      expect('userCookies' in (items?.properties ?? {})).toBe(false);
+      expect(prop?.description).toMatch(/ask the user/i);
+      expect(prop?.description).toMatch(/nothing carries over/i);
+      // The reply field the agent reads afterwards is documented in the description too.
+      expect(tool.description).toMatch(/cookies: "none", "browser:<name>"/);
+      expect(tool.description).not.toMatch(/suggestedCommand/);
+    }
+    await client.close();
+  });
+});
+
 describe('resolve_video', () => {
   it('rejects a call missing the required url', async () => {
     const client = await connectClient(buildServer());

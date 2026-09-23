@@ -638,12 +638,21 @@ describe('buildManifest', () => {
     });
     expect(m.source).toEqual({
       url: 'https://x.com/v', platform: 'youtube', title: 'T', duration: 12.5,
-      resolvedBy: 'ytdlp', status: 'ok',
+      resolvedBy: 'ytdlp', status: 'ok', cookies: 'none',
     });
     expect(m.processing).toEqual({
       selectedFrames: 0, candidateFrames: 7, peakRssMb: 123, selectorVersion: SELECTOR_VERSION, frameMode: 'key',
       warnings: [],
     });
+  });
+
+  it('records what credential was sent, and says "none" when nothing was', () => {
+    const base = {
+      url: 'u', platform: 'p', title: 't', duration: 0, resolvedBy: 'wechat', status: 'ok' as const,
+      transcript: null, frames: [], candidateCount: 0, peakRssMb: 1, frameMode: 'even' as const,
+    };
+    expect(buildManifest({ ...base, cookies: 'browser:safari' }).source.cookies).toBe('browser:safari');
+    expect(buildManifest(base).source.cookies).toBe('none');
   });
 
   it('threads warnings through and defaults them to an empty array', () => {

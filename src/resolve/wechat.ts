@@ -1,13 +1,16 @@
 import { unlink } from 'node:fs/promises';
 import { partialPathFor, promotePartial, discardPartial, sweepStalePartials } from '../util/partials.js';
 import { join } from 'node:path';
-import type { VideoResolver, ResolveOptions, ResolveResult, ResolveFailure } from '../types.js';
+import type { VideoResolver, ResolveOptions, ResolveResult, ResolveFailure, CookieUse } from '../types.js';
 import { probe } from '../media/ffmpeg.js';
 import { fetchToFile, MEDIA_DOWNLOAD_TIMEOUT_MS } from '../util/download.js';
 import { statusCallbacks } from '../status/context.js';
+import { WeChatSession, defaultSessionDeps, applyRenewal, USER_INFO_URL, type SessionCheck } from './wechatSession.js';
 
 /**
- * WeChat Channels (视频号) headless resolver.
+ * WeChat Channels (视频号) headless resolver. Where its yuanbao session comes
+ * from -- the environment, or the user's browser for a userCookies call -- is
+ * wechatSession.ts's job.
  *
  * Ported from the verified clean-room implementation at
  * experiments/wechat-clean-room/src/wechatResolver.ts (see PROTOCOL.md / FINDINGS.md there for
@@ -98,7 +101,6 @@ function previewUrlFor(shareId: string): string {
 // ---------------------------------------------------------------------------
 
 const YUANBAO = 'https://yuanbao.tencent.com';
-const USER_INFO_URL = `${YUANBAO}/api/getuserinfo`;
 const PARSE_URL = `${YUANBAO}/api/weixin/get_parse_result`;
 const OBJECT_URL_URL = `${YUANBAO}/api/findergetobjecturl`;
 const X_SOURCE = 'web';
@@ -107,7 +109,7 @@ const USER_AGENT =
   '(KHTML, like Gecko) Version/17.0 Safari/605.1.15';
 const REQUEST_TIMEOUT_MS = 15_000;
 
-type ApiResult = { ok: true; httpStatus: number; json: unknown } | { ok: false; error: string };
+type ApiResult = { ok: true; httpStatus: number; json: unknown; setCookies: string[] } | { ok: false; error: string };
 
 /** POSTs JSON when `body` is given, otherwise GETs. Never throws -- network errors come back
  *  as { ok: false }, matching the "resolve() must never throw" contract for this resolver. */
@@ -131,7 +133,7 @@ async function callApi(url: string, cookie: string, body?: unknown): Promise<Api
     const text = await res.text();
     let json: unknown = null;
     try { json = text ? JSON.parse(text) : null; } catch { /* non-JSON body; treat as no data */ }
-    return { ok: true, httpStatus: res.status, json };
+    return { ok: true, httpStatus: res.status, json, setCookies: res.headers.getSetCookie() };
   } catch (e) {
     // Defense in depth (independent of getCredential()'s own validation): Node's fetch throws a
     // TypeError both for a generic network failure ("fetch failed", safe -- confirmed by local
@@ -192,7 +194,8 @@ export function businessFailure(cls: BusinessClass): ResolveFailure | null {
   if (cls === 'auth') {
     return {
       status: 'auth_expired', resolvedBy: 'wechat',
-      message: 'WeChat session credential was rejected. Re-run the activation to refresh it.',
+      message: 'yuanbao rejected the WeChat session partway through resolving. Ask the user whether '
+        + 'to retry with userCookies: true, which signs in again through their browser.',
     };
   }
   if (cls === 'unsupported') {
@@ -208,6 +211,21 @@ export function businessFailure(cls: BusinessClass): ResolveFailure | null {
     };
   }
   return null;
+}
+
+/**
+ * getuserinfo's verdict on a session header. Measured: 401 with no session,
+ * 200 with the account's profile with one -- and with a renewed hy_token in
+ * Set-Cookie when the one sent is old, which the returned header carries.
+ */
+export async function checkSession(header: string): Promise<SessionCheck> {
+  const r = await callApi(USER_INFO_URL, header);
+  if (!r.ok) return { state: 'unknown', error: r.error };
+  if (classifyBusinessError(r.json, r.httpStatus) === 'auth') return { state: 'invalid' };
+  if (r.httpStatus !== 200) return { state: 'unknown', error: `getuserinfo answered HTTP ${r.httpStatus}` };
+  const anon = (r.json as { anonUser?: { isAnon?: unknown } } | null)?.anonUser?.isAnon === true;
+  if (anon) return { state: 'invalid' };
+  return { state: 'valid', header: applyRenewal(header, r.setCookies) };
 }
 
 // ---------------------------------------------------------------------------
@@ -277,6 +295,9 @@ function extractVideoUrl(json: unknown): string | null {
 export class WeChatHeadlessResolver implements VideoResolver {
   readonly name = 'wechat';
 
+  /** One per resolver, so the default resolver's session lives as long as the process. */
+  constructor(private readonly session: WeChatSession = new WeChatSession(defaultSessionDeps(checkSession, getCredential))) {}
+
   canResolve(url: string): boolean {
     try { return WECHAT_HOST.test(new URL(url).hostname); } catch { return false; }
   }
@@ -289,22 +310,28 @@ export class WeChatHeadlessResolver implements VideoResolver {
       };
     }
 
-    const cookie = getCredential();
-    if (!cookie) {
-      return {
-        status: 'auth_required', resolvedBy: 'wechat',
-        message: 'WeChat extraction not activated. Run the one-time activation to store a session credential.',
-      };
-    }
-
+    const userCookies = opts.userCookies === true;
     if (opts.returnVideo === false) {
+      // Without userCookies this stays the free, network-less presence check
+      // it always was (acquire(false) with nothing configured fails before
+      // any request). With it, the session is acquired for real -- signing
+      // in if need be -- so the download that usually follows finds it ready.
+      let cookies: CookieUse = 'none';
+      if (userCookies) {
+        const got = await this.session.acquire(true);
+        if (!got.ok) return got.failure;
+        cookies = got.cred.origin;
+      } else if (!this.session.hasConfigured()) {
+        const got = await this.session.acquire(false);
+        if (!got.ok) return got.failure;
+      }
       // No metadata layer exists here without spending the parse/object-url
       // API calls below -- and even those never expose a duration
       // (verified: extractParsedExport/extractVideoUrl further down read
       // only exportId/title/author/mediaUrl, never a length field,
       // anywhere in the wire protocol this resolver speaks). Treated the
       // same as direct.ts's sibling no-metadata-layer case for
-      // consistency: skip ALL network activity here, not just the final
+      // consistency: no video request at all here, not just no final
       // byte transfer, and return only what the URL structure itself
       // yields (its share id). languageHint stays 'zh' -- a documented
       // PLATFORM prior (see download() below), not a per-video
@@ -314,20 +341,20 @@ export class WeChatHeadlessResolver implements VideoResolver {
         status: 'ok', filePath: '', platform: 'wechat_channels',
         title: shareId ? `WeChat video ${shareId}` : 'WeChat video', duration: 0,
         resolvedBy: 'wechat', captions: { manual: null, auto: null },
-        languageHint: 'zh', rangeApplied: false,
+        languageHint: 'zh', rangeApplied: false, cookies,
       };
     }
 
-    // Stage 1 (verified): probe credential validity before spending a resolve call on it.
-    // A network hiccup on the probe itself is non-fatal -- fall through to the real calls.
-    const probeRes = await callApi(USER_INFO_URL, cookie);
-    if (probeRes.ok && classifyBusinessError(probeRes.json, probeRes.httpStatus) === 'auth') {
-      return {
-        status: 'auth_expired', resolvedBy: 'wechat',
-        message: 'WeChat session credential was rejected by getuserinfo. Re-run the activation to refresh it.',
-      };
-    }
+    // Stage 1 (verified): getuserinfo vets the session before a resolve call is
+    // spent on it, and renews it (wechatSession.ts) -- both inside acquire().
+    const got = await this.session.acquire(userCookies);
+    if (!got.ok) return got.failure;
+    const r = await this.resolveWith(url, opts, got.cred.header);
+    if (r.status === 'auth_expired') this.session.forget(got.cred.header);
+    return { ...r, cookies: got.cred.origin };
+  }
 
+  private async resolveWith(url: string, opts: ResolveOptions, cookie: string): Promise<ResolveResult> {
     // Stage 2 (verified): parse the share link into a finder export id.
     const parseRes = await callApi(PARSE_URL, cookie, { type: 'video_channel_url', url, scene: 1 });
     if (!parseRes.ok) {

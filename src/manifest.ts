@@ -1,4 +1,4 @@
-import type { Manifest, SelectedFrame, Transcript, FrameMode, ResolveStatus } from './types.js';
+import type { Manifest, SelectedFrame, Transcript, FrameMode, ResolveStatus, CookieUse } from './types.js';
 import { SELECTOR_VERSION } from './vision/select.js';
 
 export function buildManifest(p: {
@@ -7,12 +7,15 @@ export function buildManifest(p: {
   transcript: Transcript | null; frames: SelectedFrame[];
   candidateCount: number; peakRssMb: number; frameMode: FrameMode;
   warnings?: string[];
+  /** Absent means nothing was sent: a local file, or a failure before resolving. */
+  cookies?: CookieUse;
 }): Manifest {
   return {
     source: {
       url: p.url, platform: p.platform, title: p.title, duration: p.duration,
       resolvedBy: p.resolvedBy, status: p.status, ...(p.reason ? { reason: p.reason } : {}),
       ...(p.filePath ? { filePath: p.filePath } : {}),
+      cookies: p.cookies ?? 'none',
     },
     transcript: p.transcript,
     frames: p.frames,

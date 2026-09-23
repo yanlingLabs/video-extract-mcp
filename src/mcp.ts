@@ -62,6 +62,24 @@ const BATCHING =
   + 'one failing does not fail the others. A single item writes into destinationPath, several '
   + 'into video-1/, video-2/.';
 
+// Shared by both tools: what `cookies` reports, and when to reach for userCookies.
+const COOKIES_NOTE =
+  'Every item reports cookies: "none", "browser:<name>", "cookies_file" or "wechat_cookie" -- '
+  + 'what was sent, never a value. When an item fails as auth_required, auth_expired or '
+  + 'rate_limited and its reason suggests userCookies, ASK THE USER before retrying with '
+  + 'userCookies: true.';
+
+const USER_COOKIES = z.boolean().optional().default(false).describe(
+  'Use the user\'s own browser session for this call only. NEVER set it on your own: ask the user '
+  + 'first, every time -- it reads their browser\'s cookies, and nothing carries over to later '
+  + 'calls. Cookies come from their default browser (or an installed one this server can read, when '
+  + 'the default is unsupported; cookies in the reply names it) and go only to the site being fetched. For '
+  + 'WeChat Channels, if that browser holds no signed-in yuanbao.tencent.com session, the call '
+  + 'opens the site there and waits up to 3 minutes for them to sign in before returning -- tell '
+  + 'the user to expect that. Chrome-family browsers show a macOS Keychain prompt when read. '
+  + 'Default false.',
+);
+
 const SERVER_INSTRUCTIONS =
   'Video extraction and analysis for AI agents. Call resolve_video for a video\'s metadata '
   + 'and, optionally, the file itself; analyze_video to get a transcript and the important '
@@ -90,14 +108,14 @@ const ANALYZE_DESCRIPTION =
   'Read a video: returns its transcript and a small set of important, deduplicated keyframes '
   + 'rather than every frame. Output is written to destinationPath -- read the returned paths; '
   + 'only a short transcript comes back inline. Each item returns { status, title, duration, '
-  + 'frameCount, framePaths, manifestPath, transcriptPath?, transcript?, videoPath?, warnings }. '
+  + 'frameCount, framePaths, manifestPath, transcriptPath?, transcript?, videoPath?, warnings, '
+  + 'cookies }. '
   + BATCHING + ' '
   + 'Pass start and end for part of a video. For one exact frame use the same second for both '
   + 'with frames: "even", maxFrames: 1, transcript: false. For a transcript alone use frames: '
   + '"none" -- on a captioned video that skips the download entirely and takes seconds. '
   + 'Check every item\'s status. "rate_limited" is temporary: wait, retry, and space out '
-  + 'repeats for the same video. If a failure carries suggestedCommand, ASK THE USER before '
-  + 'running it -- it gives this server access to their browser session. Read warnings, and '
+  + 'repeats for the same video. ' + COOKIES_NOTE + ' Read warnings, and '
   + 'transcript.source, to tell a failed stage from a video that simply has no speech; when '
   + 'source is "asr", transcript.asrReason says whether the video had no captions '
   + '("no_captions") or had captions that could not be retrieved ("captions_failed"). Pass '
@@ -117,13 +135,13 @@ const RESOLVE_DESCRIPTION =
   + 'returns title, creator, duration, chapters, a description preview and the path to full '
   + 'metadata. On a long video call this first, read the chapters, then analyze only the '
   + 'section that matters. Each item returns { status, platform, title, creator, duration, '
-  + 'chapters, descriptionPreview, commentCount, metadataPath, videoPath?, clipStart?, '
+  + 'chapters, descriptionPreview, commentCount, metadataPath, cookies, videoPath?, clipStart?, '
   + 'clipEnd?, nextSteps }. '
   + BATCHING + ' '
   + 'Set returnVideo: true to download the file too -- that takes real time. With it, pass '
   + 'start and end together for one section; the clip STARTS AT 0, so use the returned offset '
   + 'when mapping times back. Leave comments off unless needed: slow on popular videos, and '
-  + 'written to the metadata file rather than inline. '
+  + 'written to the metadata file rather than inline. ' + COOKIES_NOTE + ' '
   + STATUS_NOTE + ' ' + PLATFORMS;
 
 // Task 6: honest cancellation (spec §8/§13, task-1-report.md's fact (c)).
@@ -581,6 +599,7 @@ export function buildServer(opts?: { analyzeSlots?: SlotPool; statusPort?: numbe
       inputSchema: {
         destinationPath: z.string().describe('Directory to write manifests, transcripts and frames into. Created if missing.'),
         videos: z.array(analyzeItemSchema).min(1).describe('One entry per video to analyze. One item = single video, flat layout; several = video-N subdirectories.'),
+        userCookies: USER_COOKIES,
       },
       // Fix 4(c): both tools write to the user's filesystem -- metadata,
       // media, manifest, transcript and frame images -- and both delete
@@ -743,6 +762,7 @@ export function buildServer(opts?: { analyzeSlots?: SlotPool; statusPort?: numbe
       inputSchema: {
         destinationPath: z.string().describe('Directory to write metadata (and the video, if requested) into. Created if missing. Re-running the same call overwrites in place.'),
         videos: z.array(resolveItemSchema).min(1).describe('One entry per video to resolve. One item = single video, flat layout; several = video-N subdirectories.'),
+        userCookies: USER_COOKIES,
       },
       // Fix 4(c): both tools write to the user's filesystem -- metadata,
       // media, manifest, transcript and frame images -- and both delete

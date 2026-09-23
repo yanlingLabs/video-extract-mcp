@@ -42,7 +42,7 @@ Decide one policy and document it, rather than fixing piecemeal.
 State these explicitly rather than leaving them implicit:
 
 - The spec described `transcribe_video` and `extract_keyframes` as agent-facing primitives. Four MCP tools shipped and these two were dropped without being recorded as deferred.
-- The spec's WeChat activation experience — Keychain persistence, assisted login, an expiry probe — is currently an environment variable discoverable only by reading source. The headless resolution protocol itself is validated and working.
+- The spec's WeChat activation experience — Keychain persistence, assisted login, an expiry probe. **Assisted login and the expiry probe shipped with `userCookies` (see §K); Keychain persistence did not.** The session a browser gives lives in memory only, so a restarted server reads the browser again (no sign-in, unless the browser's own session has lapsed).
 - **The acceptance matrix is a smoke matrix, not an acceptance judge.** It compares returned status against an expected status and nothing more. A passing row proves the URL was reachable and ended in the expected state; it does not prove the claim named in its "proves" column. Rows asserting that subtitle-aware selection avoids over-selecting, or that WeChat routes to the Chinese speech model, would pass without ever inspecting frames or the transcript's language. Strengthening the assertions is worth doing before treating a green matrix as evidence.
 
 ## F. Known residual risks
@@ -141,3 +141,15 @@ A real run on a Portuguese music video (`youtube.com/watch?v=fu9dCuPRFHY`) trans
 - **Whisper's residual memory creep** of ~0.7 MB per decoded segment is inside sherpa-onnx and survives forced GC. Measured to 26 minutes (2.14 GB peak); a two-hour talk was not measured.
 - **The default `VIDEO_EXTRACT_MAX_CONCURRENCY` dropped from 4 to 2** once Whisper's ~2 GB was measured (4 meant ~8 GB worst case). A smaller Whisper model was the alternative and was declined: accuracy over memory.
 - **Temp directories.** `resolve_video` (every call, `norma-res-*`) and `analyze_video` on a local file (every call, `norma-*`) left a directory in `os.tmpdir()` that nothing removed. Both now work in the `.work-*` scratch inside `destinationPath` and discard it. A server sweeps `norma-res-*` older than 24 h once at start; the CLI's `norma-*` output directories are still left alone, since their manifest points into them (§C).
+
+## K. `userCookies`: per-call browser cookies (2026-09-23)
+
+Both tools take `userCookies: true`, the user's per-call consent to their own default browser's cookies, replacing the old "set `VIDEO_EXTRACT_COOKIES_FROM_BROWSER` and restart" suggestion. For WeChat it also opens yuanbao.tencent.com for sign-in and polls for up to 3 minutes. Left open, deliberately:
+
+- **No sign-in wait for yt-dlp platforms.** WeChat has a cheap, exact test for "signed in" (`getuserinfo`), so polling it is harmless. A yt-dlp site has none: knowing the user had signed in would mean either a per-site table of session-cookie names or re-running the extraction against the platform until it passes, and repeated attempts are exactly what provokes the rate limiter. So a refusal that happens *with* browser cookies returns at once, telling the agent to have the user sign in to that site and retry.
+- **Firefox sign-ins can lag.** yt-dlp copies `cookies.sqlite` without its write-ahead log (verified in yt-dlp's `_open_database_copy`), so a cookie Firefox has not yet checkpointed is invisible. Reading the log too would need yt-dlp to change, or reading Firefox's store ourselves.
+- **Only macOS has been exercised against real browsers** (Safari, live against yuanbao: read, validated and remembered). The Linux `xdg-settings` and Windows `UserChoice` lookups, and the Linux/Windows browser openers, are tested code paths only.
+- **Renewal is kept only for sessions taken from the browser.** A renewed `VIDEO_EXTRACT_WECHAT_COOKIE` is used for the call that got it and then dropped; remembering it too is cheap, but whether it actually stops the pasted cookie expiring is unmeasured.
+- **A sign-in wait does not stop for shutdown.** The poll's sleep is an ordinary timer and takes no abort signal, so a server whose stdin closes mid-wait lives up to 3 more minutes, finishes that call and writes its result, then exits. That matches "the work finishes either way", but it is the process-lifetime class `tests/mcpProcessLifecycle.test.ts` guards, so it is recorded here rather than left to be rediscovered.
+- **The jar touches disk.** `readBrowserJar` has yt-dlp write the whole jar to a 0700 temp directory that is removed as soon as it is read. `/dev/stdout` avoided that and hung: `--cookies FILE` is also read at startup, and Node's stdout pipe is a socket.
+
