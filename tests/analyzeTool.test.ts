@@ -432,3 +432,22 @@ describe('batching (spec §3-§5)', () => {
     expect(r.videos[1]!.manifestPath).toBe(join(dir, 'video-2', 'manifest.json'));
   });
 });
+
+describe('analyze_video: userCookies and what was sent', () => {
+  it('passes userCookies into the pipeline only when the call set it', async () => {
+    analyzeMock.mockResolvedValue(manifest());
+    const dir = mkdtempSync(join(tmpdir(), 'norma-at-uc-'));
+    await analyzeVideoTool({ destinationPath: dir, videos: [{ pathOrUrl: 'https://x/v' }], userCookies: true });
+    await analyzeVideoTool({ destinationPath: dir, videos: [{ pathOrUrl: 'https://x/v' }] });
+    expect(analyzeMock.mock.calls.map((c) => (c[1] as { userCookies?: boolean }).userCookies)).toEqual([true, false]);
+  });
+
+  it("reports the manifest's cookies on the item", async () => {
+    analyzeMock.mockResolvedValue(manifest({
+      source: { url: 'u', platform: 'p', title: 'T', duration: 10, resolvedBy: 'wechat', status: 'ok', cookies: 'browser:safari' },
+    }));
+    const dir = mkdtempSync(join(tmpdir(), 'norma-at-ck-'));
+    const r = await analyzeVideoTool({ destinationPath: dir, videos: [{ pathOrUrl: 'https://x/v' }] });
+    expect(r.videos[0]!.cookies).toBe('browser:safari');
+  });
+});

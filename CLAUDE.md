@@ -182,6 +182,31 @@ records a `processing.warnings` entry, so an empty transcript is distinguishable
 from a video with no speech. A stage skipped *by design* (frame-mode short circuits)
 is not a degradation and must not fabricate a warning.
 
+**`userCookies` is consent for one call, never remembered permission.** A caller can
+never name a cookie file or a browser; `userCookies: true` means only "the user said yes
+to their own default browser, this call" (`src/util/browsers.ts`). Rules that each cost
+a real mistake or were measured:
+- **The browser opened is the browser read.** On this machine Safari was the default
+  while `detectBrowser()` found Chrome first; opening one and polling the other waits
+  forever. `browserForCall()` is the one place that decides.
+- **What is remembered is the WeChat SESSION, in memory** (`src/resolve/wechatSession.ts`),
+  so a second call skips the browser read and its Keychain prompt. A call without
+  `userCookies` never uses it. Nothing is written to disk except the jar yt-dlp exports,
+  for the moment it takes to read it (not `/dev/stdout`, which hung; see follow-ups §K).
+- **`getuserinfo` decides which cookie is right, and renews it.** A 200 there can carry
+  a fresh `hy_token` in Set-Cookie (measured on an aging token); `applyRenewal` puts it
+  in the header the rest of the resolve uses. Measured: `hy_token` + `hy_user` are the
+  session; everything the browser would send to that URL is sent anyway.
+- **No cookie value reaches a message.** yt-dlp's output is never forwarded from the jar
+  read (stdout can hold cookies); failures are fixed sentences. Tests grep for a marker.
+- **The WeChat sign-in wait is bounded** (3 minutes) and counts as execution, so the
+  honest-cancel rule makes the item uncancellable while it waits; the tool description
+  tells the agent the call may wait that long. Concurrent items share one read and one sign-in page.
+- **The WeChat session is process-lifetime module state, on purpose** -- an exception to
+  the per-`buildServer()` rule above, because a session has to outlive the call that got
+  it. It hangs off `DEFAULT_RESOLVERS`' `WeChatHeadlessResolver`; a test that needs
+  isolation constructs `new WeChatHeadlessResolver(new WeChatSession(deps))`.
+
 **Partial downloads are written under `.part` and promoted on completion.**
 `src/util/partials.ts` owns this. It exists for the shape where none of our
 cleanup code runs at all — a killed process, a crash, a power cut: the only

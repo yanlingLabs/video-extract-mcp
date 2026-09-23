@@ -180,7 +180,7 @@ describe('writeManifest (minor finding: coverage)', () => {
   it('writes to the correct literal filename (manifest.json)', () => {
     const dir = mkdtempSync(join(tmpdir(), 'norma-art-'));
     const m = {
-      source: { url: 'test', platform: 'test', title: 'test', duration: 1, resolvedBy: 'test', status: 'ok' as const },
+      source: { url: 'test', platform: 'test', title: 'test', duration: 1, resolvedBy: 'test', status: 'ok' as const, cookies: 'none' as const },
       transcript: null,
       frames: [],
       processing: { selectedFrames: 0, candidateFrames: 0, peakRssMb: 1, selectorVersion: '1', frameMode: 'key' as const, warnings: [] },
@@ -193,13 +193,13 @@ describe('writeManifest (minor finding: coverage)', () => {
   it('replaces an existing manifest file rather than duplicating it', () => {
     const dir = mkdtempSync(join(tmpdir(), 'norma-art-'));
     const m1 = {
-      source: { url: 'a', platform: 'test', title: 'a', duration: 1, resolvedBy: 'test', status: 'ok' as const },
+      source: { url: 'a', platform: 'test', title: 'a', duration: 1, resolvedBy: 'test', status: 'ok' as const, cookies: 'none' as const },
       transcript: null,
       frames: [],
       processing: { selectedFrames: 0, candidateFrames: 0, peakRssMb: 1, selectorVersion: '1', frameMode: 'key' as const, warnings: [] },
     };
     const m2 = {
-      source: { url: 'b', platform: 'test', title: 'b', duration: 2, resolvedBy: 'test', status: 'ok' as const },
+      source: { url: 'b', platform: 'test', title: 'b', duration: 2, resolvedBy: 'test', status: 'ok' as const, cookies: 'none' as const },
       transcript: null,
       frames: [],
       processing: { selectedFrames: 0, candidateFrames: 0, peakRssMb: 1, selectorVersion: '1', frameMode: 'key' as const, warnings: [] },
@@ -213,7 +213,7 @@ describe('writeManifest (minor finding: coverage)', () => {
   it('creates the directory when it does not exist', () => {
     const dir = join(mkdtempSync(join(tmpdir(), 'norma-art-')), 'nested', 'deep');
     const m = {
-      source: { url: 'test', platform: 'test', title: 'test', duration: 1, resolvedBy: 'test', status: 'ok' as const },
+      source: { url: 'test', platform: 'test', title: 'test', duration: 1, resolvedBy: 'test', status: 'ok' as const, cookies: 'none' as const },
       transcript: null,
       frames: [],
       processing: { selectedFrames: 0, candidateFrames: 0, peakRssMb: 1, selectorVersion: '1', frameMode: 'key' as const, warnings: [] },

@@ -1,12 +1,15 @@
 import { readdirSync, existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { VideoResolver, ResolveOptions, ResolveResult, ResolveFailure, CaptionTrack, Captions, VideoMetadata } from '../types.js';
+import type {
+  VideoResolver, ResolveOptions, ResolveResult, ResolveFailure, CaptionTrack, Captions, VideoMetadata, CookieUse,
+} from '../types.js';
 import { run } from '../util/run.js';
 import { sweepStalePartials } from '../util/partials.js';
 import {
-  cookieSourceFromEnv, prepareCookies, retryBrowserFor, cookieSuggestion,
+  cookieSourceFromEnv, prepareCookies, retryBrowserFor,
   CookieConfigError, type PreparedCookies, type CookieSource,
 } from '../util/cookies.js';
+import { browserForCall, browserLabel, userCookiesHint } from '../util/browsers.js';
 import { probe } from '../media/ffmpeg.js';
 import { baseLang } from '../transcript/routing.js';
 import { statusCallbacks } from '../status/context.js';
@@ -381,6 +384,13 @@ export class YtDlpResolver implements VideoResolver {
   canResolve(url: string): boolean { return /^https?:\/\//i.test(url); }
 
   async resolve(url: string, opts: ResolveOptions): Promise<ResolveResult> {
+    // Every result says what the last yt-dlp run sent, success or failure.
+    const used: { cookies: CookieUse } = { cookies: 'none' };
+    const r = await this.resolveTracked(url, opts, used);
+    return { ...r, cookies: used.cookies };
+  }
+
+  private async resolveTracked(url: string, opts: ResolveOptions, used: { cookies: CookieUse }): Promise<ResolveResult> {
     // Spec §2.1: metadata-only is the default. resolveVideoTool always
     // sends an explicit boolean; analyze.ts never sets this field at all
     // (it always wants the media), so the default must be "download" --
@@ -444,15 +454,18 @@ export class YtDlpResolver implements VideoResolver {
     // Comments can be very slow on popular videos (spec §2.1).
     if (opts.comments) args.push('--write-comments');
 
-    // Operator-configured cookies, when present. Read from the environment
-    // only -- never from `opts`, so a caller can neither name a file on this
-    // machine nor point the tool at a live browser profile (src/util/cookies.ts).
-    // A misconfigured credential throws rather than silently fetching
-    // anonymously; classify it as its own failure so the message survives.
+    // Whose cookies. userCookies means the user approved their own browser
+    // for this call, which outranks the standing configuration; otherwise
+    // it is the operator's environment. The caller can still never name a
+    // file or a browser -- only say yes to the user's own default one
+    // (src/util/cookies.ts, src/util/browsers.ts). A misconfigured credential
+    // throws rather than silently fetching anonymously; classify it as its
+    // own failure so the message survives.
+    const userBrowser = opts.userCookies ? await browserForCall() : null;
     let cookies: PreparedCookies;
     let cookieSource: CookieSource;
     try {
-      cookieSource = cookieSourceFromEnv();
+      cookieSource = userBrowser ? { kind: 'browser', spec: userBrowser.name } : cookieSourceFromEnv();
       cookies = prepareCookies(cookieSource);
     } catch (e) {
       if (e instanceof CookieConfigError) {
@@ -467,7 +480,12 @@ export class YtDlpResolver implements VideoResolver {
     // fetch from a run that failed never writes into a directory the caller
     // has already moved on from.
     const prefetchers: Array<ReturnType<typeof captionPrefetcher>> = [];
+    const baseUse: CookieUse = cookieSource.kind === 'file' ? 'cookies_file'
+      : cookieSource.kind === 'browser' ? `browser:${cookieSource.spec.split(/[+:]/)[0]!.toLowerCase()}`
+        : 'none';
     const runYtDlp = (extra: string[]) => {
+      const borrowed = extra.indexOf('--cookies-from-browser');
+      used.cookies = borrowed >= 0 ? `browser:${extra[borrowed + 1]!}` : baseUse;
       const pre = captionPrefetcher(opts.workDir, opts.preferredLanguage);
       prefetchers.push(pre);
       return run('yt-dlp', [...args, ...extra, url], { timeoutMs: 15 * 60_000, onStdout: (d) => pre.onStdout(d) });
@@ -525,22 +543,28 @@ export class YtDlpResolver implements VideoResolver {
         }
         if (r.code !== 0) {
           const failure = browser ? classifyYtDlpError(r.stderr) : first;
-          // Nothing configured, and cookies would plausibly have helped: hand
-          // back the command that would enable them. A suggestion only -- the
-          // server never reaches for a credential nobody offered.
-          if (fixable && !browser && cookieSource.kind === 'none') {
-            const s = cookieSuggestion();
-            // The command goes in the MESSAGE as well as the field: the analyze
-            // path carries only a reason string into its manifest, so a
-            // structured field alone would reach resolve_video's caller and
-            // silently not analyze_video's.
-            if (s) {
-              return {
-                ...failure,
-                message: `${failure.message} ${s.message} Command: ${s.command}`,
-                suggestedCommand: s.command,
-              };
-            }
+          const still = failure.status === 'rate_limited' || failure.status === 'auth_required';
+          if (!still) return failure;
+          // In the MESSAGE, not a separate field: the analyze path carries
+          // only a reason string into its manifest.
+          if (used.cookies === 'none') {
+            // Cookies would plausibly have helped and none were sent. Say how
+            // to send them -- a question for the user, never an action: the
+            // server does not reach for a credential nobody offered.
+            const hint = opts.userCookies
+              ? 'userCookies was set, but no browser this server can read cookies from was found. '
+                + 'VIDEO_EXTRACT_COOKIES_FILE can point at an exported cookie jar instead.'
+              : userCookiesHint(await browserForCall());
+            return { ...failure, message: `${failure.message} ${hint}` };
+          }
+          if (failure.status === 'auth_required' && used.cookies.startsWith('browser:')) {
+            const label = browserLabel(used.cookies.slice('browser:'.length));
+            return {
+              ...failure,
+              message: `${failure.message} This was refused even with ${label}'s cookies, so the user is `
+                + `probably not signed in to this site there. Ask them to sign in to it in ${label}, then `
+                + 'retry with userCookies: true.',
+            };
           }
           return failure;
         }

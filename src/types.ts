@@ -65,6 +65,15 @@ export interface Captions {
   retrievalErrors?: string[];
 }
 
+/**
+ * What credential a resolve actually sent to the platform -- never its value.
+ * 'none': nothing. 'cookies_file': the jar VIDEO_EXTRACT_COOKIES_FILE names.
+ * 'wechat_cookie': VIDEO_EXTRACT_WECHAT_COOKIE. 'browser:<name>': cookies
+ * read from that browser, whether because the caller passed userCookies or
+ * because VIDEO_EXTRACT_COOKIES_FROM_BROWSER is set.
+ */
+export type CookieUse = 'none' | 'cookies_file' | 'wechat_cookie' | `browser:${string}`;
+
 export interface ResolvedMedia {
   status: 'ok';
   filePath: string;
@@ -81,6 +90,8 @@ export interface ResolvedMedia {
   /** Applied range against the ORIGINAL video, when one was (spec §5.1). */
   clipStart?: number;
   clipEnd?: number;
+  /** Absent means 'none': local files and direct media URLs never send any. */
+  cookies?: CookieUse;
 }
 
 export interface ResolveFailure {
@@ -88,14 +99,8 @@ export interface ResolveFailure {
   reason?: UnsupportedReason | string;
   message: string;
   resolvedBy?: string;
-  /**
-   * A command the caller may run, WITH THE USER'S APPROVAL, to make this
-   * class of failure stop happening -- currently only offered for a refusal
-   * that cookies would likely fix, and only when nothing is configured yet.
-   * A suggestion, never something the server does on its own: acting on it
-   * means reading the user's browser credentials, which is theirs to allow.
-   */
-  suggestedCommand?: string;
+  /** What the failed attempt sent; absent means 'none'. */
+  cookies?: CookieUse;
 }
 
 export type ResolveResult = ResolvedMedia | ResolveFailure;
@@ -107,6 +112,13 @@ export interface ResolveOptions {
   returnVideo?: boolean;
   /** Spec §2.1: can be very slow on popular videos. */
   comments?: boolean;
+  /**
+   * The user allowed THIS call to use their browser session: cookies are
+   * read from their browser (src/util/browsers.ts) and, for WeChat, a
+   * sign-in is opened there when no session exists. Per call, never
+   * remembered as permission -- see src/resolve/wechatSession.ts.
+   */
+  userCookies?: boolean;
 }
 
 export interface VideoResolver {
@@ -169,6 +181,8 @@ export interface Manifest {
      * per-keyframe image paths). See task-16-report.md Finding 2.
      */
     filePath?: string;
+    /** What credential resolving it sent (CookieUse), never the value. */
+    cookies: CookieUse;
   };
   transcript: Transcript | null;
   frames: SelectedFrame[];
@@ -194,8 +208,10 @@ export interface Manifest {
  *  stage goes on to fail. 'downloading' fires when media transfer genuinely
  *  begins (never on a metadata-only resolve); it is emitted from the resolver
  *  layer via the status context (src/status/context.ts), so it reaches
- *  agent-layer hooks but not a bare library caller's opts.onStage. */
-export type AnalyzeStage = 'resolving' | 'downloading' | 'transcribing' | 'frames';
+ *  agent-layer hooks but not a bare library caller's opts.onStage. So does
+ *  'waiting_for_sign_in': a WeChat resolve with userCookies has opened a
+ *  sign-in page in the user's browser and is polling for the session. */
+export type AnalyzeStage = 'resolving' | 'waiting_for_sign_in' | 'downloading' | 'transcribing' | 'frames';
 
 export interface AnalyzeOptions {
   start?: number; end?: number; maxFrames?: number; transcript?: boolean;
@@ -205,6 +221,8 @@ export interface AnalyzeOptions {
   preferredLanguage?: string;
   destinationPath?: string;
   outDir?: string;
+  /** Passed through to the resolver: see ResolveOptions.userCookies. */
+  userCookies?: boolean;
   /** Called at pipeline seams; only for stages that actually run. A call
    *  means the stage is STARTING -- it does not mean the stage, or the
    *  overall analysis, went on to succeed. Failures in the callback are

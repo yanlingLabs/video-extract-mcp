@@ -320,6 +320,8 @@ describe('the lazy retry', () => {
     expect(calls[0]).not.toContain('--cookies-from-browser');   // first attempt is anonymous
     expect(calls[1]).toContain('--cookies-from-browser');       // second borrows
     expect(r.status).toBe('ok');
+    // What succeeded is what gets reported: the retry's borrowed cookies.
+    expect(r.cookies).toBe('browser:chromium');
   }, 30_000);
 
   it('does NOT retry when a browser was already named, since it would repeat', async () => {
@@ -349,8 +351,67 @@ describe('the lazy retry', () => {
   }, 30_000);
 });
 
-describe('the suggestion when nothing is configured', () => {
-  it('offers a command on a refusal, and says a keychain prompt may appear', async () => {
+describe('userCookies on the yt-dlp path', () => {
+  const argvOf = (log: string) => readFileSync(log, 'utf8').trim().split('\n');
+
+  it("sends the user's own browser cookies on the FIRST attempt, and reports which", async () => {
+    const f = fakeYtDlp();
+    stubEnv();
+    useHomeWithBrowser();
+    const r = await new YtDlpResolver().resolve('https://example.invalid/v', { workDir: f.workDir, returnVideo: false, userCookies: true });
+    const calls = argvOf(f.log);
+    expect(calls.length).toBe(1);
+    const borrowed = / --cookies-from-browser (\S+) /.exec(` ${calls[0]} `)?.[1];
+    expect(borrowed).toBeDefined();
+    // The report names the browser yt-dlp was actually told to read.
+    expect(r.cookies).toBe(`browser:${borrowed}`);
+  }, 30_000);
+
+  it('outranks a configured jar for that call, which the user just approved', async () => {
+    const f = fakeYtDlp();
+    stubEnv(jarFile());
+    useHomeWithBrowser();
+    const r = await new YtDlpResolver().resolve('https://example.invalid/v', { workDir: f.workDir, returnVideo: false, userCookies: true });
+    const argv = ` ${argvOf(f.log)[0]} `;
+    expect(argv).toContain(' --cookies-from-browser ');
+    expect(argv).not.toContain(' --cookies /');
+    expect(r.cookies).toMatch(/^browser:/);
+  }, 30_000);
+
+  it('without it, reports the configured source, or none', async () => {
+    const f = fakeYtDlp();
+    stubEnv(jarFile());
+    const withJar = await new YtDlpResolver().resolve('https://example.invalid/v', { workDir: f.workDir, returnVideo: false });
+    expect(withJar.cookies).toBe('cookies_file');
+    stubEnv(undefined, 'Firefox:work');
+    const withBrowser = await new YtDlpResolver().resolve('https://example.invalid/v', { workDir: f.workDir, returnVideo: false });
+    expect(withBrowser.cookies).toBe('browser:firefox');
+    stubEnv();
+    const anonymous = await new YtDlpResolver().resolve('https://example.invalid/v', { workDir: f.workDir, returnVideo: false });
+    expect(anonymous.cookies).toBe('none');
+    expect(argvOf(f.log)[2]).not.toContain('--cookies');
+  }, 30_000);
+
+  it('when refused even with browser cookies, says to sign in there rather than to retry blindly', async () => {
+    const binDir = mkdtempSync(join(tmpdir(), 'vem-privbin-'));
+    const workDir = mkdtempSync(join(tmpdir(), 'vem-privwork-'));
+    writeFileSync(join(binDir, 'yt-dlp'), '#!/bin/sh\necho "ERROR: [youtube] abc: Private video. Sign in if you have been granted access to this video" >&2\nexit 1\n');
+    chmodSync(join(binDir, 'yt-dlp'), 0o755);
+    prevPath = process.env['PATH'];
+    process.env['PATH'] = `${binDir}:${prevPath ?? ''}`;
+    stubEnv();
+    useHomeWithBrowser();
+    const r = await new YtDlpResolver().resolve('https://example.invalid/v', { workDir, returnVideo: false, userCookies: true });
+    const f = r as { status: string; message: string; cookies?: string };
+    expect(f.status).toBe('auth_required');
+    expect(f.cookies).toMatch(/^browser:/);
+    expect(f.message).toMatch(/refused even with \S+'s cookies/);
+    expect(f.message).toMatch(/sign in to it in/);
+  }, 30_000);
+});
+
+describe('the hint when nothing was sent', () => {
+  it('asks the user about userCookies on a refusal -- no restart, no command to run', async () => {
     const binDir = mkdtempSync(join(tmpdir(), 'vem-sugbin-'));
     const workDir = mkdtempSync(join(tmpdir(), 'vem-sugwork-'));
     writeFileSync(join(binDir, 'yt-dlp'),
@@ -362,14 +423,14 @@ describe('the suggestion when nothing is configured', () => {
     useHomeWithBrowser();
 
     const r = await new YtDlpResolver().resolve('https://example.invalid/v', { workDir, returnVideo: false });
-    const f = r as { status: string; message: string; suggestedCommand?: string };
+    const f = r as { status: string; message: string; cookies?: string };
     expect(f.status).toBe('rate_limited');
-    expect(f.suggestedCommand).toContain('VIDEO_EXTRACT_COOKIES_FROM_BROWSER=auto');
-    // The surprising part must be stated BEFORE it happens.
-    expect(f.message).toMatch(/keychain/i);
-    // And the command must reach the message too -- the analyze path carries
-    // only a reason string, so a structured field alone would not reach it.
-    expect(f.message).toContain(f.suggestedCommand!);
+    expect(f.cookies).toBe('none');
+    expect(f.message).toMatch(/Ask the user whether to retry with userCookies: true/);
+    // The old hint told the agent to re-register the server, which only
+    // took effect after a restart; that is exactly what userCookies replaces.
+    expect(f.message).not.toMatch(/VIDEO_EXTRACT_COOKIES_FROM_BROWSER|restart/);
+    expect('suggestedCommand' in f).toBe(false);
   }, 30_000);
 
   it('offers nothing for a failure cookies cannot fix', async () => {
@@ -382,6 +443,6 @@ describe('the suggestion when nothing is configured', () => {
     stubEnv();
 
     const r = await new YtDlpResolver().resolve('https://example.invalid/v', { workDir, returnVideo: false });
-    expect((r as { suggestedCommand?: string }).suggestedCommand).toBeUndefined();
+    expect((r as { message: string }).message).not.toMatch(/userCookies/);
   }, 30_000);
 });

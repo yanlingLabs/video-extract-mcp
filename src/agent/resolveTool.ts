@@ -1,6 +1,6 @@
 import { mkdirSync, renameSync, copyFileSync, existsSync } from 'node:fs';
 import { join, relative, isAbsolute, resolve as resolvePath } from 'node:path';
-import type { Captions, CaptionTrack, Chapter } from '../types.js';
+import type { Captions, CaptionTrack, Chapter, CookieUse } from '../types.js';
 import { resolve } from '../resolve/index.js';
 import { trim } from '../media/ffmpeg.js';
 import { descriptionPreview, mediaFileName, writeMetadata } from './artifacts.js';
@@ -36,9 +36,8 @@ export interface ResolveItemResult {
   descriptionPreview?: string | null;
   commentCount?: number | null;
   metadataPath: string;
-  /** Present only on a failure cookies would plausibly fix, with none configured.
-   *  Run it only with the user's approval: it grants access to their browser session. */
-  suggestedCommand?: string;
+  /** What credential was sent (see CookieUse), on every result. */
+  cookies: CookieUse;
   videoPath?: string;
   clipStart?: number;
   clipEnd?: number;
@@ -54,7 +53,12 @@ export interface ResolveVideoItem {
   comments?: boolean;
 }
 
-async function resolveOneVideoAttempt(item: ResolveVideoItem, destinationPath: string): Promise<ResolveItemResult> {
+/** What the resolve sent, recorded as soon as it is known -- a later throw still reports it. */
+interface Sent { cookies: CookieUse }
+
+async function resolveOneVideoAttempt(
+  item: ResolveVideoItem, destinationPath: string, userCookies: boolean, sent: Sent,
+): Promise<ResolveItemResult> {
   mkdirSync(destinationPath, { recursive: true });
   // Private scratch inside destinationPath, discarded on every exit -- the
   // same arrangement analyze_video uses (src/agent/workdir.ts has the
@@ -64,28 +68,32 @@ async function resolveOneVideoAttempt(item: ResolveVideoItem, destinationPath: s
   sweepAbandonedWorkDirs(destinationPath);
   const workDir = mintWorkDir(destinationPath);
   try {
-    return await resolveInto(item, destinationPath, workDir);
+    return await resolveInto(item, destinationPath, workDir, userCookies, sent);
   } finally {
     discardWorkDir(workDir);
   }
 }
 
-async function resolveInto(item: ResolveVideoItem, destinationPath: string, workDir: string): Promise<ResolveItemResult> {
+async function resolveInto(
+  item: ResolveVideoItem, destinationPath: string, workDir: string, userCookies: boolean, sent: Sent,
+): Promise<ResolveItemResult> {
   const returnVideo = item.returnVideo ?? false;
   const r = await resolve(item.url, {
     workDir,
     returnVideo,
+    userCookies,
     comments: item.comments ?? false,
     start: returnVideo ? item.start : undefined,
     end: returnVideo ? item.end : undefined,
   });
+  sent.cookies = r.cookies ?? 'none';
 
   if (r.status !== 'ok') {
     // Failure still writes what little we know, so the shape is stable.
     // `url` is included because ResolveFailure itself carries none, and
     // without it a failure record on disk cannot be correlated back to
     // what was being resolved.
-    const metadataPath = writeMetadata(destinationPath, { url: item.url, ...r });
+    const metadataPath = writeMetadata(destinationPath, { url: item.url, ...r, cookies: r.cookies ?? 'none' });
     // Prefer the categorical reason (e.g. 'drm_protected') when the resolver
     // supplied one, falling back to the human-readable message otherwise --
     // the same fold analyze.ts:86 already uses for the same ResolveFailure
@@ -93,10 +101,7 @@ async function resolveInto(item: ResolveVideoItem, destinationPath: string, work
     // The brief's reference always used r.message, silently discarding a
     // populated r.reason.
     const reason = typeof r.reason === 'string' ? r.reason : r.message;
-    return {
-      status: r.status, reason, metadataPath,
-      ...(r.suggestedCommand ? { suggestedCommand: r.suggestedCommand } : {}),
-    };
+    return { status: r.status, reason, metadataPath, cookies: r.cookies ?? 'none' };
   }
 
   // Range extraction is genuine for yt-dlp sources but is a documented
@@ -133,7 +138,7 @@ async function resolveInto(item: ResolveVideoItem, destinationPath: string, work
   // Spec §5.1: the saved metadata must record the applied range, whether the
   // resolver applied it or the local trim above just did.
   const metadataPath = writeMetadata(destinationPath, {
-    url: item.url, platform: r.platform, resolvedBy: r.resolvedBy,
+    url: item.url, platform: r.platform, resolvedBy: r.resolvedBy, cookies: r.cookies ?? 'none',
     clipStart: appliedStart, clipEnd: appliedEnd,
     captions, languageHint: r.languageHint,
     ...(r.metadata ?? {}),
@@ -214,6 +219,7 @@ async function resolveInto(item: ResolveVideoItem, destinationPath: string, work
     descriptionPreview: descriptionPreview(r.metadata?.description ?? null),
     commentCount: r.metadata?.commentCount ?? null,
     metadataPath,
+    cookies: r.cookies ?? 'none',
     ...(durationKnown ? { duration: clipDuration ?? r.metadata?.duration ?? r.duration } : {}),
     ...(videoPath ? { videoPath } : {}),
     ...(clipped ? { clipStart: appliedStart, clipEnd: appliedEnd } : {}),
@@ -244,25 +250,33 @@ async function resolveInto(item: ResolveVideoItem, destinationPath: string, work
  * absorbed into a structured ResolveFailure becomes an honest
  * 'extractor_failed' result here instead of an uncaught rejection.
  */
-export async function resolveOneVideo(item: ResolveVideoItem, destinationPath: string): Promise<ResolveItemResult> {
+export async function resolveOneVideo(
+  item: ResolveVideoItem, destinationPath: string, userCookies = false,
+): Promise<ResolveItemResult> {
+  const sent: Sent = { cookies: 'none' };
   try {
-    return await resolveOneVideoAttempt(item, destinationPath);
+    return await resolveOneVideoAttempt(item, destinationPath, userCookies, sent);
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     let metadataPath = join(destinationPath, 'metadata.json');
     try {
-      metadataPath = writeMetadata(destinationPath, { url: item.url, status: 'extractor_failed', message });
+      metadataPath = writeMetadata(destinationPath, { url: item.url, status: 'extractor_failed', message, cookies: sent.cookies });
     } catch {
       // destinationPath itself may be unusable (e.g. it exists as a file,
       // not a directory) -- metadataPath still names where it WOULD have
       // gone, so the result shape stays stable even though nothing could
       // actually be written there.
     }
-    return { status: 'extractor_failed', reason: `resolve_video failed: ${message}`, metadataPath };
+    return { status: 'extractor_failed', reason: `resolve_video failed: ${message}`, metadataPath, cookies: sent.cookies };
   }
 }
 
-export interface ResolveToolArgs { destinationPath: string; videos: ResolveVideoItem[]; }
+export interface ResolveToolArgs {
+  destinationPath: string;
+  videos: ResolveVideoItem[];
+  /** Per call: the user allowed their browser session for this one (ResolveOptions.userCookies). */
+  userCookies?: boolean;
+}
 export interface ResolveToolResult { videos: ResolveItemResult[]; }
 
 /** resolve_video's counterpart to AnalyzeRunHooks (src/agent/analyzeTool.ts)
@@ -296,7 +310,7 @@ export async function resolveVideoTool(args: ResolveToolArgs, hooks?: ResolveRun
         onSpawn: (pid, cmd) => hooks?.onSpawn?.(i, pid, cmd),
         onSpawnEnded: () => hooks?.onSpawnEnded?.(i),
       },
-      () => resolveOneVideo(item, itemDir(args.destinationPath, i, n)),
+      () => resolveOneVideo(item, itemDir(args.destinationPath, i, n), args.userCookies === true),
     );
     // Final whole-branch review, Important finding 2: see
     // analyzeVideoTool's identical wiring (src/agent/analyzeTool.ts) for

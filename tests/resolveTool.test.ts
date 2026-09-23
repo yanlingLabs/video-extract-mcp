@@ -541,3 +541,26 @@ describe('batching (spec §3-§5)', () => {
     expect(done).toEqual([[1, 'ok'], [0, 'ok']]);
   });
 });
+
+describe('resolve_video: userCookies and what was sent', () => {
+  it('passes userCookies to the resolver only when the call set it', async () => {
+    resolveMock.mockResolvedValue(ok());
+    const dir = mkdtempSync(join(tmpdir(), 'norma-rt-uc-'));
+    await resolveVideoTool({ destinationPath: dir, videos: [{ url: 'https://x/v' }], userCookies: true });
+    await resolveVideoTool({ destinationPath: dir, videos: [{ url: 'https://x/v' }] });
+    expect(resolveMock.mock.calls.map((c) => (c[1] as { userCookies?: boolean }).userCookies)).toEqual([true, false]);
+  });
+
+  it('reports cookies on every item, success or failure, and records it in metadata.json', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'norma-rt-ck-'));
+    resolveMock.mockResolvedValueOnce(ok({ cookies: 'browser:safari' }));
+    resolveMock.mockResolvedValueOnce({ status: 'auth_required', message: 'm', resolvedBy: 'wechat', cookies: 'wechat_cookie' });
+    resolveMock.mockResolvedValueOnce(ok());
+    const r = await resolveVideoTool({
+      destinationPath: dir, videos: [{ url: 'https://x/a' }, { url: 'https://x/b' }, { url: 'https://x/c' }],
+    });
+    expect(r.videos.map((v) => v.cookies)).toEqual(['browser:safari', 'wechat_cookie', 'none']);
+    const saved = r.videos.map((v) => (JSON.parse(readFileSync(v.metadataPath, 'utf8')) as { cookies?: string }).cookies);
+    expect(saved).toEqual(['browser:safari', 'wechat_cookie', 'none']);
+  });
+});

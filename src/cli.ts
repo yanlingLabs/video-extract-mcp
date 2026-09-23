@@ -39,6 +39,8 @@ export function parseArgs(argv: string[]): { url: string; opts: AnalyzeOptions }
     else if (a === '--lang') { const v = next(); if (v !== undefined) opts.preferredLanguage = v; }
     else if (a === '--out') { const v = next(); if (v !== undefined) opts.outDir = v; }
     else if (a === '--no-transcript') opts.transcript = false;
+    // Typed by the person running it, which is the consent userCookies needs.
+    else if (a === '--user-cookies') opts.userCookies = true;
   }
   return { url, opts };
 }
@@ -85,10 +87,13 @@ async function main(): Promise<void> {
   if (!url) {
     console.error(
       'usage: video-extract <url|path> [--start S --end E] [--frames key|even|none]\n'
-      + '                     [--max-frames N] [--lang zh] [--no-transcript] [--out DIR]\n\n'
+      + '                     [--max-frames N] [--lang zh] [--no-transcript] [--out DIR]\n'
+      + '                     [--user-cookies]\n\n'
       + '  --frames key   (default) the most informative frames, deduplicated\n'
       + '  --frames even  uniform sampling across the range; --max-frames sets density\n'
-      + '  --frames none  no frames at all (transcript only)\n\n'
+      + '  --frames none  no frames at all (transcript only)\n'
+      + '  --user-cookies use your default browser\'s cookies for this run (for WeChat,\n'
+      + '                 opens yuanbao.tencent.com to sign in when there is no session)\n\n'
       + '  one exact frame:  --start 7 --end 7 --frames even --max-frames 1 --no-transcript\n\n'
       + 'subcommands:\n'
       + '  video-extract status    what this machine\'s servers are working on\n'

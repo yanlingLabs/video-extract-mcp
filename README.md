@@ -150,14 +150,40 @@ npm run preflight            # verifies ffmpeg / ffprobe / yt-dlp / tesseract
 | `VIDEO_EXTRACT_AUTO_FETCH_MODELS` | Set `0` to stop the speech models being downloaded on demand. They are then your job (`scripts/fetch-models.sh`), and an uncaptioned video degrades with a warning saying so. |
 | `VIDEO_EXTRACT_COOKIES_FILE` | Path to a Netscape-format cookie jar, used for **every** yt-dlp source at once — YouTube, Instagram, Facebook, X, TikTok, Twitch and the rest. See [Authenticated sources](#authenticated-sources). |
 | `VIDEO_EXTRACT_COOKIES_FROM_BROWSER` | Load cookies from a local browser instead: `chrome`, `firefox`, `safari`, `edge`, `brave`, `chromium`, `opera`, `vivaldi`, `whale`, optionally `browser:profile`. Ignored when `VIDEO_EXTRACT_COOKIES_FILE` is set. |
-| `VIDEO_EXTRACT_WECHAT_COOKIE` | A yuanbao session cookie, required only for WeChat Channels links. Separate from the above by design — a different protocol with its own credential. |
+| `VIDEO_EXTRACT_WECHAT_COOKIE` | A yuanbao session cookie for WeChat Channels links. Optional since a `userCookies` call can take the session from your browser instead (see [Per call, no restart](#per-call-no-restart-usercookies)). Separate from the above by design — a different protocol with its own credential. |
 | `VIDEO_EXTRACT_MAX_CONCURRENCY` | Caps concurrent `analyze_video` item executions — plain calls and background tasks, batch items and separate calls, all count against the same limit. Default `2` (each analysis can take ~2 GB; see Memory below). `resolve_video` is exempt: it loads no models, so there is nothing to throttle. |
 | `VIDEO_EXTRACT_TASK_TTL_MS` | How long a completed background-task handle stays queryable before it expires. Default `1800000` (30 minutes). `0` (or any non-positive value) means the handle never expires. Governs the in-memory handle only — files already written to `destinationPath` are never deleted by the tool, expired handle or not. |
 | `VIDEO_EXTRACT_STATUS_PORT` | Pins the port of the localhost `/status` endpoint (see [Watching progress](#watching-progress)). Unset picks an ephemeral port each start (default: endpoint on). The literal value `0` disables the endpoint entirely — note the contrast with `VIDEO_EXTRACT_TASK_TTL_MS` above, where `0` means *no expiry*, not disabled. |
 
 ### Authenticated sources
 
-Plenty of media is not public, and the answer is the same one the platforms themselves ask for: cookies. **One jar covers every yt-dlp source at once** — cookies are scoped by domain inside the file, so a single export authenticates YouTube, Instagram, Facebook, X, TikTok and Twitch together. It is not a YouTube-only setting.
+Plenty of media is not public, and the answer is the same one the platforms themselves ask for: cookies. There are two ways to give them: per call, with nothing to configure, or as a standing setting in the environment.
+
+#### Per call, no restart: `userCookies`
+
+Both tools take `userCookies: true`. It means "the user said yes to their own browser, for this call": the server reads cookies from your **default** browser and sends them only to the site being fetched. Nothing carries over, so the agent has to ask again next time — the tool descriptions tell it to ask you first, every time, the way a shell tool asks before leaving its sandbox. No environment variable, no restart.
+
+When a request is refused with no cookies sent (`auth_required`, `auth_expired`, `rate_limited`), the reply says so and suggests asking you. Every item reports what it sent, never a value:
+
+| `cookies` | Meaning |
+|---|---|
+| `"none"` | Nothing was sent. |
+| `"browser:safari"` (or `chrome`, `firefox`, …) | Cookies from that browser, via `userCookies` or `VIDEO_EXTRACT_COOKIES_FROM_BROWSER`. |
+| `"cookies_file"` | The jar `VIDEO_EXTRACT_COOKIES_FILE` names. |
+| `"wechat_cookie"` | `VIDEO_EXTRACT_WECHAT_COOKIE`. |
+
+**WeChat Channels signs you in.** With `userCookies`, a WeChat link uses the yuanbao.tencent.com session already in your browser. If there is none, the server opens yuanbao.tencent.com in that browser and waits up to 3 minutes while you sign in (WeChat QR code or phone), then carries on. If you don't sign in within 3 minutes, the call fails with a message asking you to finish signing in and retry. Every session is checked against yuanbao's `getuserinfo` before use. When the token is old, that response carries a renewed one, and the server now uses it instead of discarding it as earlier versions did. Keeping it may help a pasted `VIDEO_EXTRACT_WECHAT_COOKIE` expire less often, but that is unmeasured. A session taken from the browser is kept in memory, renewed each time, so later calls skip the browser read. Each call still has to pass `userCookies` to use it, and it is never written to disk.
+
+Worth knowing:
+
+- **"Your browser" means the default one**, because that is where a sign-in page opens and where the cookies are then read. If yt-dlp can't read the default (Arc, for instance), it falls back to an installed browser it can read and opens that one instead.
+- **Chrome-family browsers show a macOS Keychain prompt** when read ("Chrome Safe Storage"). "Always Allow" stops it repeating; while waiting for a WeChat sign-in the server checks those browsers every 15 seconds rather than 5 for the same reason. Safari needs no prompt, but the app running the server may need Full Disk Access to read it; if it does, the reply says so.
+- **Firefox may be slow to show a new sign-in:** yt-dlp copies only `cookies.sqlite`, not the write-ahead log where recent changes can sit until Firefox merges them.
+- Only macOS has been exercised against real browsers. The Linux (`xdg-settings`) and Windows (`UserChoice`) default-browser lookups are tested code paths only.
+
+#### Standing configuration
+
+**One jar covers every yt-dlp source at once** — cookies are scoped by domain inside the file, so a single export authenticates YouTube, Instagram, Facebook, X, TikTok and Twitch together. It is not a YouTube-only setting. Like any environment variable, these take effect when the server starts.
 
 ```bash
 export VIDEO_EXTRACT_COOKIES_FROM_BROWSER=auto       # recommended: borrow only when blocked
@@ -181,13 +207,13 @@ export VIDEO_EXTRACT_COOKIES_FILE=~/cookies.txt
 
 Set both and the file wins — they are alternatives, not a pair.
 
-**Expect an OS keychain prompt.** Every Chrome-family browser encrypts its cookie store against the system keyring, so the first read shows a dialog you must approve — on macOS, "Chrome Safe Storage". Firefox does not; its store is plain SQLite, which is why `auto` prefers it when both are present. If you set nothing at all and a request is refused, the reply tells you the command to enable this and warns about that prompt, rather than leaving you to discover it.
+**Expect an OS keychain prompt.** Every Chrome-family browser encrypts its cookie store against the system keyring, so the first read shows a dialog you must approve — on macOS, "Chrome Safe Storage". Firefox does not; its store is plain SQLite, which is why `auto` prefers it when both are present. If a request is refused with no cookies sent, the reply suggests asking you about `userCookies`, and warns about that prompt, rather than leaving you to discover it.
 
 What it unlocks, beyond simply logging in: age-restricted and members-only YouTube, most of Instagram and Facebook, much of X, subscriber-only Twitch — and **`rate_limited` / "sign in to confirm you're not a bot"**, which an anonymous fetch hits far sooner than a signed-in one.
 
 Three things worth knowing before you use it:
 
-- **It is read from the environment only.** A caller can never name a cookie file or a browser per-request. An agent that could do either could read any file on the machine, or lift a live session — so that stays the operator's decision, not the agent's.
+- **A caller can never name a cookie file or a browser.** An agent that could do either could read any file on the machine, or pick any session on it. The most it can do is pass `userCookies: true`, which only ever means your default browser, for that one call, after asking you.
 - **Your jar is never modified.** `--cookies FILE` doesn't only read that file, it rewrites it on exit; the tool copies your jar to a private temp file, hands yt-dlp the copy, and deletes it afterwards. The cost is that refreshed cookies aren't written back.
 - **Exporting from a browser you are actively logged into can log you out.** Platforms rotate session cookies, and a copy taken from a live session goes stale — YouTube is especially prone to it. yt-dlp's own advice: export from a private/incognito window, then close that window *without* logging out.
 
@@ -432,7 +458,7 @@ Selection is iterative and diversity-aware (maximal marginal relevance), not a f
 
 Genuinely exercised code paths: **YouTube, TikTok, Facebook and Reels, X/Twitter, Instagram, Twitch, Vimeo, Reddit, WeChat Channels**, and direct `.mp4`/`.m3u8` URLs. Many other sites work through yt-dlp's generic extraction. Some will not, and those return a clear failure status rather than throwing.
 
-WeChat Channels (视频号) support is worth calling out: it resolves **headlessly**, through a documented request sequence, with no browser automation and no MITM proxy. It needs a `VIDEO_EXTRACT_WECHAT_COOKIE` environment variable. The protocol was derived clean-room from Tencent's own served frontend and authenticated probes — deliberately *without* consulting existing implementations, since the well-known one is MIT + Commons Clause and would have restricted commercial use.
+WeChat Channels (视频号) support is worth calling out: it resolves **headlessly**, through a documented request sequence, with no browser automation and no MITM proxy. It needs a signed-in yuanbao.tencent.com session: from your browser on a `userCookies` call (which opens the site for you to sign in when there is none), or from a `VIDEO_EXTRACT_WECHAT_COOKIE` environment variable. The protocol was derived clean-room from Tencent's own served frontend and authenticated probes — deliberately *without* consulting existing implementations, since the well-known one is MIT + Commons Clause and would have restricted commercial use.
 
 ## Design constraints worth knowing
 

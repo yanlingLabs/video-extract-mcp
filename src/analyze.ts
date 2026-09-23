@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type {
   AnalyzeOptions, Manifest, Transcript, Candidate, SelectedFrame, FrameMode, CaptionTrack, Captions, ResolveOptions,
+  CookieUse,
 } from './types.js';
 import { resolveFrameMode } from './types.js';
 import { resolve } from './resolve/index.js';
@@ -67,6 +68,11 @@ export function usableCaption(
   return existsSync(track.path) ? { tier, track } : null;
 }
 
+/** What is known about the source so far, for a failure manifest to report. */
+interface AnalyzedSource {
+  platform: string; title: string; resolvedBy: string; duration: number; cookies: CookieUse;
+}
+
 /**
  * Why no platform caption could be used even though the source offered one:
  * the resolver's own retrieval failures, plus a track it reported that is no
@@ -92,7 +98,7 @@ export async function analyzeVideo(url: string, opts: AnalyzeOptions = {}): Prom
   // Best-known source context for the catch-all failure manifest below --
   // updated as stages succeed, so a mid-pipeline throw still reports which
   // platform/title it got as far as resolving.
-  const src = { platform: 'unknown', title: '', resolvedBy: 'none', duration: 0 };
+  const src: AnalyzedSource = { platform: 'unknown', title: '', resolvedBy: 'none', duration: 0, cookies: 'none' };
   // Silent-degrade trail (Manifest.processing.warnings): shared with the
   // pipeline so degradations recorded before a later hard failure still
   // reach the failure manifest.
@@ -110,7 +116,7 @@ export async function analyzeVideo(url: string, opts: AnalyzeOptions = {}): Prom
     // honest failure manifest here instead of a rejection.
     return buildManifest({
       url, platform: src.platform, title: src.title, duration: src.duration,
-      resolvedBy: src.resolvedBy, status: 'extractor_failed',
+      resolvedBy: src.resolvedBy, status: 'extractor_failed', cookies: src.cookies,
       reason: `analysis failed: ${e instanceof Error ? e.message : String(e)}`,
       transcript: null, frames: [], candidateCount: 0, peakRssMb: rss.stop(), frameMode, warnings,
     });
@@ -125,7 +131,7 @@ export async function analyzeVideo(url: string, opts: AnalyzeOptions = {}): Prom
 
 async function analyzeResolved(
   url: string, opts: AnalyzeOptions, frameMode: FrameMode, rss: PeakRssTracker,
-  src: { platform: string; title: string; resolvedBy: string; duration: number },
+  src: AnalyzedSource,
   warnings: string[],
 ): Promise<Manifest> {
   const maxFrames = opts.maxFrames ?? 35;
@@ -164,6 +170,7 @@ async function analyzeResolved(
   const mightSkipMedia = frameMode === 'none' && opts.transcript !== false && !wantsRange;
   const resolveOpts: ResolveOptions = {
     start: opts.start, end: opts.end, workDir, preferredLanguage: opts.preferredLanguage,
+    userCookies: opts.userCookies,
   };
   let res = await resolve(url, mightSkipMedia ? { ...resolveOpts, returnVideo: false } : resolveOpts);
   // Phase 2: the cheap pass produced no media and the transcript will need
@@ -178,11 +185,13 @@ async function analyzeResolved(
     return buildManifest({
       url, platform: 'unknown', title: '', duration: 0, resolvedBy: res.resolvedBy ?? 'none',
       status: res.status, reason: typeof res.reason === 'string' ? res.reason : res.message,
+      cookies: res.cookies,
       transcript: null, frames: [], candidateCount: 0, peakRssMb: rss.stop(), frameMode, warnings,
     });
   }
   src.platform = res.platform; src.title = res.title;
   src.resolvedBy = res.resolvedBy; src.duration = res.duration;
+  src.cookies = res.cookies ?? 'none';
 
   // 2. Apply the range if the resolver could not (spec §18: optimization, not
   // guarantee). `clipRelative` tracks whether `media` (and later `video` /
@@ -489,7 +498,7 @@ async function analyzeResolved(
     } catch (e) {
       return buildManifest({
         url, platform: res.platform, title: res.title, duration: meta.duration,
-        resolvedBy: res.resolvedBy, status: 'extractor_failed',
+        resolvedBy: res.resolvedBy, status: 'extractor_failed', cookies: src.cookies,
         reason: `candidate pipeline failed: ${e instanceof Error ? e.message : String(e)}`,
         transcript, frames: [], candidateCount, peakRssMb: rss.stop(), frameMode, warnings,
       });
@@ -554,7 +563,7 @@ async function analyzeResolved(
 
   return buildManifest({
     url, platform: res.platform, title: res.title, duration: meta.duration,
-    resolvedBy: res.resolvedBy, status: 'ok', filePath: video,
+    resolvedBy: res.resolvedBy, status: 'ok', filePath: video, cookies: src.cookies,
     transcript, frames, candidateCount, peakRssMb: rss.stop(), frameMode, warnings,
   });
 }
