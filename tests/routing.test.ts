@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { chooseAsrEngine, pickSenseVoiceLanguage } from '../src/transcript/routing.js';
+import { chooseAsrEngine, pickSenseVoiceLanguage, pickWhisperLanguage } from '../src/transcript/routing.js';
 
 describe('chooseAsrEngine (spec §9)', () => {
   it.each(['zh', 'yue', 'ja', 'ko'])('routes %s to SenseVoice', (lang) => {
@@ -54,5 +54,19 @@ describe('pickSenseVoiceLanguage', () => {
   });
   it('ignores null/undefined/empty entries without crashing or counting them', () => {
     expect(pickSenseVoiceLanguage([null, undefined, '', '<|ko|>', '<|ko|>'])).toBe('ko');
+  });
+});
+
+describe('pickWhisperLanguage', () => {
+  it('reports the language Whisper detected, by majority -- not "auto"', () => {
+    // Real sherpa-onnx whisper-small output on a Portuguese song: bare codes.
+    expect(pickWhisperLanguage(['pt', 'pt', 'es', 'pt'])).toBe('pt');
+  });
+  it('keeps "yue" as real signal, unlike SenseVoice (its artifact does not apply here)', () => {
+    expect(pickWhisperLanguage(['yue', 'yue'])).toBe('yue');
+  });
+  it('falls back to the caller\'s language, then "auto", only when nothing was detected', () => {
+    expect(pickWhisperLanguage(['', null], 'de')).toBe('de');
+    expect(pickWhisperLanguage([])).toBe('auto');
   });
 });
