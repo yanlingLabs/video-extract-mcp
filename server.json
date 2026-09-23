@@ -6,12 +6,12 @@
     "url": "https://github.com/yanlingLabs/video-extract-mcp",
     "source": "github"
   },
-  "version": "0.16.1",
+  "version": "0.16.2",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "@yanlinglabs/video-extract-mcp",
-      "version": "0.16.1",
+      "version": "0.16.2",
       "transport": {
         "type": "stdio"
       },
