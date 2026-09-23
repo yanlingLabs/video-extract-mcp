@@ -21,6 +21,7 @@ import { chooseAsrEngine } from './transcript/routing.js';
 import { transcribeAudio } from './transcript/asr.js';
 import { ensureAsrModels } from './transcript/fetchModels.js';
 import { resolveModelsDir } from './util/models.js';
+import { rangePastEnd } from './util/range.js';
 import { buildManifest } from './manifest.js';
 import { PeakRssTracker } from './util/rss.js';
 
@@ -207,6 +208,16 @@ async function analyzeResolved(
   // as "no media" too (the ASR guard below then fails loudly) instead of
   // being assumed present.
   const mediaSkipped = media === '';
+  // A range past the end can only fail inside ffmpeg, as something that
+  // reads like the platform's fault; say what is actually wrong instead.
+  const past = !res.rangeApplied ? rangePastEnd(opts.start, res.duration) : null;
+  if (past && opts.end !== undefined) {
+    return buildManifest({
+      url, platform: res.platform, title: res.title, duration: res.duration, resolvedBy: res.resolvedBy,
+      status: 'extractor_failed', reason: past, cookies: src.cookies,
+      transcript: null, frames: [], candidateCount: 0, peakRssMb: rss.stop(), frameMode, warnings,
+    });
+  }
   if (opts.start !== undefined && opts.end !== undefined && !res.rangeApplied) {
     if (frameMode === 'even' && opts.start === opts.end) {
       // Single-instant even-sampling request (spec §8's canonical example:

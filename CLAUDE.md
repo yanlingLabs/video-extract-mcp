@@ -322,10 +322,13 @@ since `toBe(0)` and `toBeFalsy()` pass against several real bugs here.
 
 ## Honesty
 
-`docs/acceptance-matrix.md` reports **0 of 11 rows executed** because it needs real
-URLs via `M_*` environment variables. The platform list is tested *code paths*, not
-platforms anyone has watched succeed live. Do not let docs, comments, or tool
-descriptions imply otherwise. `docs/follow-ups.md` records every deliberately
+`docs/acceptance-matrix.md` was first run against real URLs on 2026-09-23 (Apple
+Silicon macOS): all 10 executed rows pass, after the range row's YouTube 403 was fixed
+with a whole-download-plus-local-trim fallback; the DRM row was not run. X, Twitch and Instagram downloads also worked live; Vimeo needs
+a signed-in account under yt-dlp 2026.08.19, and Reddit is untried. Claims about other
+platforms (Intel, Linux beyond CI, Windows) or other sites are still untested code
+paths -- do not let docs, comments, or tool descriptions imply otherwise. Rerun with
+the `M_*` variables (`MATRIX_TIMEOUT_MS` for long videos) before claiming more. `docs/follow-ups.md` records every deliberately
 deferred item with its reasoning — check it before "discovering" a known gap.
 
 ## Reference

@@ -571,3 +571,14 @@ describe('resolve_video: userCookies and what was sent', () => {
     expect(saved).toEqual(['browser:safari', 'wechat_cookie', 'none']);
   });
 });
+
+describe('resolve_video: a range past the end of the video', () => {
+  it('says so, instead of failing inside the trim', async () => {
+    resolveMock.mockResolvedValue(ok({ duration: 19, rangeApplied: false, metadata: undefined }));
+    const dir = mkdtempSync(join(tmpdir(), 'norma-rt-past-'));
+    const r = await resolveVideoTool({ destinationPath: dir, videos: [{ url: 'https://x/v.mp4', returnVideo: true, start: 23, end: 60 }] });
+    expect(r.videos[0]!.status).toBe('extractor_failed');
+    expect(r.videos[0]!.reason).toMatch(/starts at 23s, but the video is only 19s long/);
+    expect('videoPath' in r.videos[0]!).toBe(false);
+  });
+});

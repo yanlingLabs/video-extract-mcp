@@ -47,7 +47,12 @@ State these explicitly rather than leaving them implicit:
 
 ## F. Known residual risks
 
-- **Real-platform behavior is unproven.** The caption-acquisition rewrite was verified against the installed yt-dlp's own source and a faithful fake, but never against a live platform. Running the matrix with real URLs is the necessary next step.
+- **Real-platform behavior: largely proven on macOS (2026-09-23).** The acceptance matrix ran against real URLs, and 9 of 10 executed rows passed: captions (manual and none), TikTok, Facebook, `auth_required`, direct MP4, generic embed, WeChat and Chinese/SenseVoice. X, Twitch and Instagram also downloaded live. Still open:
+  - ~~**A refused ranged fetch does not fall back.**~~ **Fixed.** YouTube answered the ranged fetch with 403 (reproduced with bare yt-dlp right after a whole download of the same talk). A refused range (`rate_limited`, or a generic ffmpeg failure) now retries once as a whole download, and the callers' existing local trim cuts the section; verified live (a 37 s clip with its manual captions re-based). The 403 was also invisible to the classifier: with `--print-json`, yt-dlp routes ffmpeg's output to STDOUT, so classification now reads stderr plus stdout's non-JSON lines.
+  - ~~**A range past the end of the video**~~ **Fixed:** "The requested range starts at 23s, but the video is only 19s long", checked before any fallback download (yt-dlp prints the duration first) and again before a local trim.
+  - **Vimeo** fails inside yt-dlp 2026.07.04 ("Failed to fetch macos OAuth token: HTTP Error 401"); 2026.08.19 instead says its web client "only works when logged-in", so Vimeo needs `userCookies` and a Vimeo account.
+  - **The Chinese row peaked at 2,326 MB** (a 90 s Bilibili video, 137 candidate frames, SenseVoice), above the ~1.1 GB SenseVoice figure and the 2,048 MB target; the first run of the same row measured 2,000 MB. The matrix measures the whole process tree, runner included. Not yet investigated.
+  - **DRM** has not been run (no DRM page at hand), and **Reddit** has not been tried.
 - When yt-dlp performs a sectioned download, it snaps to keyframes and may start slightly before the requested point, so caption re-basing can be off by up to ~1.5 s. This is a small constant offset, not the range-sized misalignment that was fixed.
 - Automatic-caption track ordering can prefer a machine-translated English track over the original language when no preference and no platform hint are available.
 - There is no CI, and no CI would fetch the roughly 1.5 GB of models, so the model-backed integration tests will skip in any automated run. The real speech and embedding integration currently rests on local execution.
