@@ -55,10 +55,33 @@ export function pickSenseVoiceLanguage(
   rawLangs: Array<string | null | undefined>,
   preferredLanguage?: string,
 ): string {
+  return pickDetectedLanguage(rawLangs, preferredLanguage, SENSEVOICE_LID_ARTIFACT);
+}
+
+/**
+ * Whisper's counterpart. Unlike SenseVoice on this sherpa-onnx build, Whisper's
+ * per-segment `.lang` is real language identification (measured: "pt" on
+ * every segment of a Portuguese song), so a majority vote over it is the
+ * transcript language. Before this, the Whisper path always reported 'auto',
+ * even on a video whose platform metadata and speech were both plainly
+ * Portuguese.
+ */
+export function pickWhisperLanguage(
+  rawLangs: Array<string | null | undefined>,
+  preferredLanguage?: string,
+): string {
+  return pickDetectedLanguage(rawLangs, preferredLanguage, null);
+}
+
+function pickDetectedLanguage(
+  rawLangs: Array<string | null | undefined>,
+  preferredLanguage: string | undefined,
+  artifact: string | null,
+): string {
   const counts = new Map<string, number>();
   for (const raw of rawLangs) {
     const lang = normalizeSenseVoiceLang(raw);
-    if (!lang || lang === SENSEVOICE_LID_ARTIFACT) continue; // no usable signal
+    if (!lang || lang === artifact) continue; // no usable signal
     counts.set(lang, (counts.get(lang) ?? 0) + 1);
   }
   let best: string | null = null;

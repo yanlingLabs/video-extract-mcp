@@ -132,3 +132,55 @@ describe.skipIf(!ready)('asrWorker VAD tail handling (regression for dropped tra
     expect(buggyCoverage).toBe(trimmedLen - WINDOW);
   }, 60_000);
 });
+
+// The worker streams its input: the WAV is read in pieces and VAD segments
+// are decoded as they are emitted, so memory no longer grows with audio
+// length. These pin that streaming changes NOTHING about what VAD sees.
+describe.skipIf(!ready)('asrWorker streaming input (memory independent of audio length)', () => {
+  it('openPcm16Wav yields exactly the samples sherpa.readWave loads, whatever the piece size', async () => {
+    const sherpa = (await import('sherpa-onnx-node')).default;
+    const { openPcm16Wav } = await import('../dist/transcript/asrWorker.js');
+    const { run } = await import('../dist/util/run.js');
+    const { mkdtempSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    // Written exactly as extractAudio writes it -- ffmpeg adds a LIST chunk
+    // before `data`, so this also exercises walking past unknown chunks.
+    const wav = join(mkdtempSync(join(tmpdir(), 'vem-wav-')), 'work.wav');
+    const r = await run('ffmpeg', ['-y', '-i', 'tests/fixtures/speech.wav', '-vn', '-ac', '1', '-ar', '16000', '-c:a', 'pcm_s16le', wav]);
+    expect(r.code).toBe(0);
+
+    const whole = sherpa.readWave(wav);
+    const opened = openPcm16Wav(wav, 777)!;
+    expect(opened).not.toBeNull();
+    expect(opened.sampleRate).toBe(whole.sampleRate);
+    expect(opened.totalSamples).toBe(whole.samples.length);
+    const pieces = [...opened.pieces()];
+    expect(pieces.length).toBeGreaterThan(1);
+    const joined = new Float32Array(opened.totalSamples);
+    let at = 0;
+    for (const p of pieces) { joined.set(p, at); at += p.length; }
+    expect(at).toBe(whole.samples.length);
+    expect(Buffer.from(joined.buffer).equals(Buffer.from(whole.samples.buffer, whole.samples.byteOffset, whole.samples.byteLength))).toBe(true);
+  });
+
+  it('streamVad over odd-sized pieces emits the same segments as runVad over the whole input', async () => {
+    const sherpa = (await import('sherpa-onnx-node')).default;
+    const { runVad, streamVad } = await import('../dist/transcript/asrWorker.js');
+    const wave = sherpa.readWave('tests/fixtures/speech.wav');
+    const freshVad = () => new sherpa.Vad({
+      sileroVad: {
+        model: 'models/silero_vad.onnx',
+        threshold: 0.5, minSilenceDuration: 0.5, minSpeechDuration: 0.25, maxSpeechDuration: 20,
+      },
+      sampleRate: wave.sampleRate, numThreads: 1, debug: 0,
+    }, 60);
+    const pieces: Float32Array[] = [];
+    for (let i = 0; i < wave.samples.length; i += 1000) pieces.push(wave.samples.slice(i, i + 1000)); // 1000 % 512 != 0
+    const streamed: Array<{ start: number; samples: Float32Array }> = [];
+    streamVad(freshVad(), pieces, WINDOW, (s) => streamed.push(s));
+    const whole = runVad(freshVad(), wave.samples, WINDOW);
+    expect(whole.length).toBeGreaterThan(0);
+    expect(streamed.map((s) => [s.start, s.samples.length])).toEqual(whole.map((s) => [s.start, s.samples.length]));
+  });
+});
