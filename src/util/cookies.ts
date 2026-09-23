@@ -213,13 +213,3 @@ export function prepareCookies(source: CookieSource): PreparedCookies {
   };
 }
 
-/**
- * The browser to retry with after a refusal, or null when a retry would be
- * pointless. Only 'auto' ever returns one: every other configured source
- * already supplied its cookies on the first attempt, so retrying with the
- * same credentials would just repeat the same refusal, and an unconfigured
- * server must not reach for credentials nobody offered.
- */
-export function retryBrowserFor(source: CookieSource): string | null {
-  return source.kind === 'auto' ? detectBrowser() : null;
-}

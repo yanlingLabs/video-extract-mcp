@@ -7,6 +7,7 @@ import { descriptionPreview, mediaFileName, writeMetadata } from './artifacts.js
 import { itemDir } from './analyzeTool.js';
 import { runWithStatus } from '../status/context.js';
 import { sweepAbandonedWorkDirs, mintWorkDir, discardWorkDir, deliverFile } from './workdir.js';
+import { rangePastEnd } from '../util/range.js';
 
 /**
  * True when `filePath` is located inside `dir`. Fix 1 (data loss): renaming
@@ -126,6 +127,13 @@ async function resolveInto(
   let appliedStart = r.clipStart;
   let appliedEnd = r.clipEnd;
   if (returnVideo && item.start !== undefined && item.end !== undefined && !r.rangeApplied) {
+    const past = rangePastEnd(item.start, r.duration);
+    if (past) {
+      const metadataPath = writeMetadata(destinationPath, {
+        url: item.url, status: 'extractor_failed', message: past, cookies: r.cookies ?? 'none',
+      });
+      return { status: 'extractor_failed', reason: past, metadataPath, cookies: r.cookies ?? 'none' };
+    }
     sourcePath = await trim(r.filePath, item.start, item.end, join(workDir, 'clip.mp4'));
     appliedStart = item.start;
     appliedEnd = item.end;

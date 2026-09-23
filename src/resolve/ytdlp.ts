@@ -6,11 +6,12 @@ import type {
 import { run } from '../util/run.js';
 import { sweepStalePartials } from '../util/partials.js';
 import {
-  cookieSourceFromEnv, prepareCookies, retryBrowserFor,
+  cookieSourceFromEnv, prepareCookies,
   CookieConfigError, type PreparedCookies, type CookieSource,
 } from '../util/cookies.js';
 import { browserForCall, browserLabel, userCookiesHint } from '../util/browsers.js';
 import { siteHost } from '../util/signInPage.js';
+import { rangePastEnd } from '../util/range.js';
 import { waitForSiteSignIn, MAX_RETRIES, DECLINED_MESSAGE, type SiteSignInDeps } from './siteSignIn.js';
 import { probe } from '../media/ffmpeg.js';
 import { baseLang } from '../transcript/routing.js';
@@ -376,6 +377,38 @@ function captionPrefetcher(workDir: string, preferredLanguage?: string) {
 const SUBTITLE_FAILURE_RE = /unable to download video subtitles for '([^']+)': ([^\n]*)/i;
 const MANUAL_SUB_ARGS = ['--write-subs', '--sub-format', 'vtt', '--sub-langs', 'all,-live_chat'];
 
+/**
+ * Everything yt-dlp said about a run, minus the info-dict JSON. With
+ * --print-json, yt-dlp routes a ranged download's ffmpeg errors -- the
+ * "Server returned 403 Forbidden" that makes it classifiable -- to STDOUT
+ * (measured: present on stderr without --print-json, absent with it), so
+ * classifying stderr alone saw only "ffmpeg exited with code 8". The JSON
+ * lines are left out: a video's own title or description saying "sign in"
+ * must never read as an error.
+ */
+function diagnostics(r: { stdout: string; stderr: string }): string {
+  return `${r.stderr}\n${r.stdout.split('\n').filter((l) => !l.trimStart().startsWith('{')).join('\n')}`;
+}
+
+/** The info dict yt-dlp prints before a download starts, if any. */
+function printedMeta(stdout: string): YtDlpMeta | null {
+  const line = stdout.trim().split('\n').filter((l) => l.startsWith('{')).pop();
+  if (!line) return null;
+  try { return JSON.parse(line) as YtDlpMeta; } catch { return null; }
+}
+
+const RANGE_ARGS = new Set(['--download-sections', '--force-keyframes-at-cuts', '--verbose']);
+
+/** The same invocation fetching the whole video: the range and its --verbose go. */
+function withoutRange(args: string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    if (!RANGE_ARGS.has(args[i]!)) { out.push(args[i]!); continue; }
+    if (args[i] === '--download-sections') i++; // and its value
+  }
+  return out;
+}
+
 function withoutManualSubs(args: string[]): string[] {
   const i = args.indexOf(MANUAL_SUB_ARGS[0]!);
   return i < 0 ? args : [...args.slice(0, i), ...args.slice(i + MANUAL_SUB_ARGS.length)];
@@ -523,6 +556,24 @@ export class YtDlpResolver implements VideoResolver {
         args = withoutManualSubs(args);
         r = await runYtDlp([]);
       }
+      // A range is an optimization, never a guarantee (spec §18): when the
+      // ranged fetch itself is refused -- YouTube answered ffmpeg's direct
+      // fetch with 403 in the first live matrix run, right after a whole
+      // download of the same video succeeded -- fetch the whole video once
+      // instead. rangeApplied then comes out false, and the callers' own
+      // local trim (analyze.ts, resolveTool.ts) cuts the section.
+      if (r.code !== 0 && wantsRange) {
+        const ranged = classifyYtDlpError(diagnostics(r));
+        if (ranged.status === 'rate_limited' || ranged.status === 'extractor_failed') {
+          // The info dict is printed before the download, so the duration is
+          // known even though the fetch failed: a range that starts past the
+          // end is the caller's mistake, not the platform's refusal.
+          const past = rangePastEnd(opts.start, printedMeta(r.stdout)?.duration);
+          if (past) return { status: 'extractor_failed', message: past, resolvedBy: 'ytdlp' };
+          args = withoutRange(args);
+          r = await runYtDlp([]);
+        }
+      }
       if (r.code !== 0) {
         // A refusal is the one failure cookies can plausibly fix, so it is
         // the only one worth spending them on. Everything else (DRM, removed
@@ -534,12 +585,16 @@ export class YtDlpResolver implements VideoResolver {
         // earlier draft that tried destroyed 2.4MB of a running download.
         // Whatever a failure leaves is collected by the age-gated sweep above
         // on a later call into this directory (src/util/partials.ts).
-        const first = classifyYtDlpError(r.stderr);
+        const first = classifyYtDlpError(diagnostics(r));
         const fixable = first.status === 'rate_limited' || first.status === 'auth_required';
-        // Only 'auto' returns a browser here: an eagerly-configured source
-        // already sent its cookies on the attempt that just failed, so
-        // retrying with the same credentials would repeat the same refusal.
-        const browser = fixable ? retryBrowserFor(cookieSource) : null;
+        // Only 'auto' retries: an eagerly-configured source already sent its
+        // cookies on the attempt that just failed, so retrying with the same
+        // credentials would repeat the same refusal, and an unconfigured
+        // server must not reach for credentials nobody offered. The browser
+        // is the user's default, the same one userCookies reads: 'auto' used
+        // to prefer Firefox, then Chrome, and on a Safari user's machine that
+        // borrowed Chrome's cookies and told them to sign in to Chrome.
+        const browser = fixable && cookieSource.kind === 'auto' ? ((await browserForCall())?.name ?? null) : null;
         if (browser) {
           // ONE retry, never a loop: if borrowed cookies do not clear it, the
           // refusal is about rate rather than identity and hammering it is
@@ -547,7 +602,7 @@ export class YtDlpResolver implements VideoResolver {
           r = await runYtDlp(['--cookies-from-browser', browser]);
         }
         if (r.code !== 0) {
-          const failure = browser ? classifyYtDlpError(r.stderr) : first;
+          const failure = browser ? classifyYtDlpError(diagnostics(r)) : first;
           const still = failure.status === 'rate_limited' || failure.status === 'auth_required';
           if (!still) return failure;
           // In the MESSAGE, not a separate field: the analyze path carries
@@ -586,14 +641,14 @@ export class YtDlpResolver implements VideoResolver {
               return runYtDlp([]);
             },
             verdict: (x) => (x.code === 0 ? 'ok'
-              : classifyYtDlpError(x.stderr).status === 'auth_required' ? 'refused' : 'other'),
+              : classifyYtDlpError(diagnostics(x)).status === 'auth_required' ? 'refused' : 'other'),
             requester: opts.requestedBy,
             deps: this.signIn,
           });
           if (waited.outcome === 'signed_in' && waited.last) {
             r = waited.last;
           } else if (waited.outcome === 'other' && waited.last) {
-            return classifyYtDlpError(waited.last.stderr);
+            return classifyYtDlpError(diagnostics(waited.last));
           } else if (waited.outcome === 'declined') {
             return { ...failure, message: `${failure.message} ${DECLINED_MESSAGE}` };
           } else {

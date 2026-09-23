@@ -5,7 +5,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import {
-  cookieSourceFromEnv, prepareCookies, detectBrowser, retryBrowserFor, CookieConfigError,
+  cookieSourceFromEnv, prepareCookies, detectBrowser, CookieConfigError,
 } from '../src/util/cookies.js';
 import { realSys } from '../src/util/browsers.js';
 import { YtDlpResolver } from '../src/resolve/ytdlp.js';
@@ -278,13 +278,6 @@ describe('cookieSourceFromEnv: auto', () => {
     expect(prepareCookies({ kind: 'auto' }).args).toEqual([]);
   });
 
-  it('is the only source that offers a retry browser', () => {
-    // An eagerly-configured source already sent its cookies on the attempt
-    // that just failed; retrying with the same credentials repeats it.
-    expect(retryBrowserFor({ kind: 'browser', spec: 'chrome' })).toBeNull();
-    expect(retryBrowserFor({ kind: 'file', path: '/x' })).toBeNull();
-    expect(retryBrowserFor({ kind: 'none' })).toBeNull();
-  });
 });
 
 describe('the lazy retry', () => {
@@ -321,8 +314,14 @@ describe('the lazy retry', () => {
     expect(calls[0]).not.toContain('--cookies-from-browser');   // first attempt is anonymous
     expect(calls[1]).toContain('--cookies-from-browser');       // second borrows
     expect(r.status).toBe('ok');
-    // What succeeded is what gets reported: the retry's borrowed cookies.
-    expect(r.cookies).toBe('browser:chromium');
+    // What succeeded is what gets reported: the retry's borrowed cookies,
+    // from the browser yt-dlp was actually told to read.
+    const borrowed = / --cookies-from-browser (\S+) /.exec(` ${calls[1]} `)?.[1];
+    expect(r.cookies).toBe(`browser:${borrowed}`);
+    // 'auto' borrows from the user's DEFAULT browser, the one userCookies
+    // reads: this HOME has no LaunchServices override, so on macOS that is
+    // Safari -- not the Chromium profile that is merely installed.
+    if (process.platform === 'darwin') expect(borrowed).toBe('safari');
   }, 30_000);
 
   it('does NOT retry when a browser was already named, since it would repeat', async () => {

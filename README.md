@@ -196,7 +196,7 @@ Worth knowing:
 export VIDEO_EXTRACT_COOKIES_FROM_BROWSER=auto       # recommended: borrow only when blocked
 ```
 
-**`auto` is lazy, and that is the point.** Ordinary requests send no cookies at all. Only when a platform actually refuses one does the server detect an installed browser, retry that single request with its cookies, and stop — no loop. You pay the cost of touching a credential store only when something is genuinely blocked, which is also what keeps a borrowed session from being rotated out from under you on every public video.
+**`auto` is lazy, and that is the point.** Ordinary requests send no cookies at all. Only when a platform actually refuses one does the server take your default browser (the same one `userCookies` uses), retry that single request with its cookies, and stop — no loop. You pay the cost of touching a credential store only when something is genuinely blocked, which is also what keeps a borrowed session from being rotated out from under you on every public video.
 
 The other two modes are eager — cookies on every request:
 
@@ -214,7 +214,7 @@ export VIDEO_EXTRACT_COOKIES_FILE=~/cookies.txt
 
 Set both and the file wins — they are alternatives, not a pair.
 
-**Expect an OS keychain prompt.** Every Chrome-family browser encrypts its cookie store against the system keyring, so the first read shows a dialog you must approve — on macOS, "Chrome Safe Storage". Firefox does not; its store is plain SQLite, which is why `auto` prefers it when both are present. If a request is refused with no cookies sent, the reply suggests asking you about `userCookies`, and warns about that prompt, rather than leaving you to discover it.
+**Expect an OS keychain prompt.** Every Chrome-family browser encrypts its cookie store against the system keyring, so the first read shows a dialog you must approve — on macOS, "Chrome Safe Storage". Firefox and Safari do not. If a request is refused with no cookies sent, the reply suggests asking you about `userCookies`, and warns about that prompt, rather than leaving you to discover it.
 
 What it unlocks, beyond simply logging in: age-restricted and members-only YouTube, most of Instagram and Facebook, much of X, subscriber-only Twitch — and **`rate_limited` / "sign in to confirm you're not a bot"**, which an anonymous fetch hits far sooner than a signed-in one.
 
@@ -483,26 +483,23 @@ WeChat Channels (视频号) support is worth calling out: it resolves **headless
 
 ## Status
 
-**This is a working proof of concept, and honest about what that means.**
+Tested live on macOS (Apple Silicon), on real videos, as of 0.16.0 (2026-09-23):
 
-What is verified:
-
-- 584 automated tests pass, including integration tests driving a real MCP client end-to-end against synthetic video fixtures — among them the status channel's own kill-workflow test: observe a live item's child pid via `/status`, kill it, confirm that item fails honestly while its batch sibling still completes.
-- The WeChat resolution protocol was verified live, end to end, returning a real MP4.
-- Caption-tier selection was verified against the installed yt-dlp's own source.
+- **The acceptance matrix ran against real URLs: all 10 executed rows pass** ([docs/acceptance-matrix.md](docs/acceptance-matrix.md)). Those were YouTube with manual captions and with none (Whisper), TikTok, Facebook, a sign-in-walled YouTube video (a clean `auth_required`), a direct MP4, a video embedded in a web page, WeChat Channels and a Chinese Bilibili video (SenseVoice). The ranged-download row failed on the first run because YouTube refused the ranged fetch with a 403. A refused range now falls back to downloading the whole video and trimming it locally, and the row passes. The DRM row was not run; no DRM page was at hand.
+- **Downloads from X, Twitch and Instagram** also worked live, with no cookies needed. **Vimeo** now requires a signed-in account in yt-dlp (2026.08.19), so it needs `userCookies` and a Vimeo sign-in; Reddit has not been tried.
+- **Browser cookies and sign-in** (`userCookies`) ran end to end with Safari, including a real WeChat sign-in through the sign-in page.
+- 821 automated tests pass, including integration tests driving a real MCP client end to end, and CI runs them on Linux and macOS with Node 22 and 26.
 - The memory rate and single-frame latency are measured numbers, not estimates.
 
-What is **not** verified:
+What has not been run live: Intel Macs, Linux beyond CI's test suite, and Windows. Nothing in the code is tied to macOS, so most of it should work elsewhere, but the native libraries it relies on differ by platform (see [Platform support](#platform-support)).
 
-- **The live-platform acceptance matrix has never been run.** `docs/acceptance-matrix.md` reports 0 of 11 rows executed, because it needs real URLs supplied via environment variables. Every platform above is a code path that is unit- and integration-tested — not a platform someone has watched succeed on a live link.
-
-If you run the matrix against real URLs, that result is the single most valuable contribution this project can receive right now. See below.
+If you run `npm run matrix` on another platform, or against sites not listed above, that result is the most useful contribution this project can receive. See below.
 
 ## Contributing
 
 Contributions are genuinely welcome, and there is a clear on-ramp. **[CONTRIBUTING.md](CONTRIBUTING.md)** has the full version — setup, the build trap that will otherwise waste your first hour, the testing standard, and the invariants that break quietly. The short version:
 
-**Highest value first:** run `npm run matrix` with real URLs in the environment variables it names, and open an issue with what you saw. That converts the project's biggest unknown into fact.
+**Highest value first:** run `npm run matrix` with real URLs in the environment variables it names, on a platform other than Apple Silicon macOS, and open an issue with what you saw.
 
 **Also open, with context already written down:** `docs/follow-ups.md` records every deliberately-deferred item with its reasoning — selector weight calibration against real footage, end-of-file candidate edges, byte-range fetching for direct and WeChat sources, and more. These are not vague "good first issue" labels; each one explains what was tried and why it was left.
 
@@ -536,11 +533,11 @@ Nothing in this code is platform-specific by design, but the native libraries it
 
 | Platform | Status |
 |---|---|
-| macOS, Apple Silicon | Developed and tested here. The speech-recognition library's bundled runtime declares macOS 15.5 as its minimum; older versions are untested. |
+| macOS, Apple Silicon | Developed here and tested live: the acceptance matrix against real URLs, and downloads from nine platforms. The speech-recognition library's bundled runtime declares macOS 15.5 as its minimum; older versions are untested. |
 | macOS, Intel | `onnxruntime-node` has shipped no Intel Mac binary since 1.24, so image embeddings run on a WebAssembly fallback: near-identical results, several times slower, noted in `processing.warnings`. Local speech recognition needs macOS 15. Not yet run on real Intel hardware. |
 | macOS 12 | See below. |
-| Linux (glibc) | The test suite runs there in CI; no live runs reported yet. |
-| Windows | Untested. |
+| Linux (glibc) | The full test suite runs there in CI; no live runs against real URLs yet. Expected to work. |
+| Windows | Not run yet. The engine should work, but browser cookies are the weak spot there: Chrome's app-bound encryption is known to block yt-dlp from reading them. |
 
 ### macOS 12 (Monterey)
 

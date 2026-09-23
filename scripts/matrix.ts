@@ -391,7 +391,10 @@ export async function runMatrix(
 // because Node realpaths the main module while argv[1] stays as typed.
 // Same guard now used by src/cli.ts, src/mcp.ts and scripts/preflight.ts.
 if (isMainModule(import.meta.url)) {
-  const results = await runMatrix();
+  // MATRIX_TIMEOUT_MS: a whole-video row on a long video (a 20-minute talk)
+  // needs longer than the default to download and analyze.
+  const fromEnv = Number(process.env['MATRIX_TIMEOUT_MS']);
+  const results = await runMatrix(CASES, Number.isFinite(fromEnv) && fromEnv > 0 ? { timeoutMs: fromEnv } : {});
   const s = summarize(results);
   console.log(`\n${s.executed} of ${s.total} rows executed (${s.skipped} skipped). Of executed: ${s.passed} passed, ${s.failed} failed, ${s.timedOut} timed out.`);
   if (s.failed > 0 || s.timedOut > 0) process.exitCode = 1;
