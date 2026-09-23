@@ -58,14 +58,18 @@ export async function main(): Promise<void> {
   // routinely fails on current YouTube.
   const ytdlp = results.find((r) => r.name === 'yt-dlp');
   if (ytdlp?.version && ytdlp.version < '2026.06.00') {
-    console.warn(`\nyt-dlp ${ytdlp.version} is stale -> run: brew upgrade yt-dlp`);
+    const upgrade = process.platform === 'darwin' ? 'brew upgrade yt-dlp'
+      : process.platform === 'win32' ? 'winget upgrade yt-dlp.yt-dlp' : 'yt-dlp -U';
+    console.warn(`\nyt-dlp ${ytdlp.version} is stale -> run: ${upgrade}`);
   }
 
   const { stdout: langs } = await pexec('tesseract', ['--list-langs']).catch(() => ({
     stdout: '',
   }));
   if (!langs.includes('chi_sim')) {
-    console.warn('tesseract lacks chi_sim (needed for WeChat OCR) -> run: brew install tesseract-lang');
+    const add = process.platform === 'darwin' ? 'run: brew install tesseract-lang'
+      : 'see INSTALL.md for your platform';
+    console.warn(`tesseract lacks chi_sim (needed for WeChat OCR) -> ${add}`);
   }
 
   if (results.some((r) => !r.ok)) process.exitCode = 1;
