@@ -38,22 +38,42 @@ export async function normalizeVideo(input: string, workDir: string) {
     // yuv420p rejects outright ("Invalid argument") -- a guaranteed
     // first-contact failure on TikTok/Reels/Shorts-shaped sources.
     '-vf', "scale='min(1280,iw)':'min(720,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2",
-    '-an', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', video,
+    // Audio is KEPT. This file is what analyze_video delivers as videoPath,
+    // and the tool tells callers to pass videoPath back in to look at another
+    // moment -- with `-an` that second call silently had no audio and so no
+    // transcript. The AAC pass costs little next to the libx264 one.
+    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-c:a', 'aac', '-b:a', '128k', video,
   ]);
   if (v.code !== 0) throw new Error(`normalize(video) failed: ${v.stderr.slice(-400)}`);
   return { video };
 }
 
+/** Whether `input` carries at least one audio stream. Throws when ffprobe
+ *  cannot read the file at all, so "unreadable" never passes for "silent". */
+export async function hasAudioStream(input: string): Promise<boolean> {
+  const r = await run('ffprobe', [
+    '-v', 'error', '-select_streams', 'a', '-show_entries', 'stream=index', '-of', 'csv=p=0', input,
+  ]);
+  if (r.code !== 0) throw new Error(`ffprobe could not read ${input}: ${r.stderr.slice(-300).trim()}`);
+  return r.stdout.trim() !== '';
+}
+
 /**
  * The audio half of normalize(): extract a 16kHz mono wav. Split out (spec §8
  * / Fix 2) so a caller with transcript:false never pays for this pass.
- * If input has no audio stream, the audio file will not be created --
- * downstream treats file absence as "no audio" and decides whether to
- * transcribe accordingly.
+ * `audio` is null when the input genuinely has no audio stream. Any other
+ * failure throws: ffmpeg's exit status used to be ignored, so a decode
+ * failure and a silent video both came back as a missing file, and the
+ * caller could not say which had happened.
  */
-export async function extractAudio(input: string, workDir: string) {
+export async function extractAudio(input: string, workDir: string): Promise<{ audio: string | null }> {
+  if (!(await hasAudioStream(input))) return { audio: null };
   const audio = join(workDir, 'work.wav');
-  await run('ffmpeg', ['-y', '-i', input, '-vn', '-ac', '1', '-ar', '16000', '-c:a', 'pcm_s16le', audio]);
+  rmSync(audio, { force: true });
+  const r = await run('ffmpeg', ['-y', '-i', input, '-vn', '-ac', '1', '-ar', '16000', '-c:a', 'pcm_s16le', audio]);
+  if (r.code !== 0 || !existsSync(audio)) {
+    throw new Error(`audio extraction failed: ${r.stderr.slice(-300).trim() || `ffmpeg exited ${r.code}`}`);
+  }
   return { audio };
 }
 

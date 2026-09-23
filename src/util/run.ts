@@ -16,6 +16,11 @@ export interface RunOpts {
    *  below), which is a real path/PATH-resolved binary name that only
    *  needs its directory component stripped. */
   label?: string;
+  /** Called with each stdout chunk as it arrives, for a caller that must act
+   *  on output before the process exits (src/resolve/ytdlp.ts starts the
+   *  caption fetch the moment yt-dlp prints its info dict, instead of after
+   *  a download that can take minutes). The full stdout is still returned. */
+  onStdout?: (chunk: string) => void;
 }
 
 export async function run(
@@ -66,7 +71,7 @@ export async function run(
       : null;
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
-    child.stdout.on('data', (d) => { stdout += d; });
+    child.stdout.on('data', (d: string) => { stdout += d; opts.onStdout?.(d); });
     child.stderr.on('data', (d) => { stderr += d; });
     child.on('error', (e) => {
       if (timer) clearTimeout(timer);

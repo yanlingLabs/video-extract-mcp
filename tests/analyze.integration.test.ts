@@ -474,12 +474,18 @@ describe('analyzeVideo -- documented no-throw contract (media-stage throws becom
     expect(m.processing.peakRssMb).toBeGreaterThan(0);
   }, 60_000);
 
-  it('returns an honest failure manifest when extractAudio() throws, instead of rejecting', async () => {
+  it('degrades a failed extractAudio() to a recorded warning, instead of rejecting', async () => {
     // The other half of the Fix 2 split, tested independently: normalizeVideo
     // throwing is covered above. frames:'none' keeps normalizeVideo out of
     // the picture entirely (never called), isolating this to the
     // audio-extraction half specifically -- transcript defaults to true, so
     // extractAudio() still runs even with no frames requested at all.
+    //
+    // Once pinned as extractor_failed, back when extractAudio ignored
+    // ffmpeg's exit status and only the catch-all could see a throw. It now
+    // reports real decode failures, which makes it the transcript stage
+    // failing -- the same class as a failed ASR run: the analysis goes on
+    // and the failure is a warning, never a silently missing transcript.
     const dir = mkdtempSync(join(tmpdir(), 'norma-e2e-audiothrow-'));
     const v = await makeTestVideo(join(dir, 'v.mp4'), 6);
     vi.mocked(extractAudio).mockImplementationOnce(async () => {
@@ -487,8 +493,9 @@ describe('analyzeVideo -- documented no-throw contract (media-stage throws becom
     });
     const m = await analyzeVideo(v, { frames: 'none', outDir: join(dir, 'out') });
     expect(extractAudio).toHaveBeenCalled();
-    expect(m.source.status).toBe('extractor_failed');
-    expect(m.source.reason).toContain('SIMULATED: extractAudio exploded');
+    expect(m.source.status).toBe('ok');
+    expect(m.transcript).toBeNull();
+    expect(m.processing.warnings).toEqual(['no transcript: SIMULATED: extractAudio exploded']);
     expect(m.processing.peakRssMb).toBeGreaterThan(0);
   }, 60_000);
 });

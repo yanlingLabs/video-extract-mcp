@@ -52,6 +52,19 @@ export interface CaptionTrack {
   language: string | null;
 }
 
+/**
+ * What a resolver acquired, and what it could not. `retrievalErrors` is how a
+ * caption track the platform OFFERED but that never arrived (throttled,
+ * timed out, not a caption file) stays distinguishable from a video that has
+ * no captions at all: both leave manual/auto null, and only this says which.
+ * Absent when nothing failed.
+ */
+export interface Captions {
+  manual: CaptionTrack | null;
+  auto: CaptionTrack | null;
+  retrievalErrors?: string[];
+}
+
 export interface ResolvedMedia {
   status: 'ok';
   filePath: string;
@@ -59,7 +72,7 @@ export interface ResolvedMedia {
   title: string;
   duration: number;
   resolvedBy: 'ytdlp' | 'direct' | 'wechat';
-  captions: { manual: CaptionTrack | null; auto: CaptionTrack | null };
+  captions: Captions;
   languageHint: string | null;
   /** True when the resolver already trimmed to the requested range. */
   rangeApplied: boolean;
@@ -106,6 +119,13 @@ export interface TranscriptSegment { start: number; end: number; text: string; }
 export type TranscriptSource = 'manual' | 'auto' | 'asr';
 export interface Transcript {
   language: string; source: TranscriptSource; segments: TranscriptSegment[];
+  /**
+   * Present only when source is 'asr': why local speech recognition was used.
+   * 'no_captions' -- the source offered no caption track at all.
+   * 'captions_failed' -- it offered one that could not be retrieved; the
+   * details are in processing.warnings.
+   */
+  asrReason?: 'no_captions' | 'captions_failed';
 }
 
 export interface Candidate {

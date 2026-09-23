@@ -2,7 +2,7 @@ import { mkdtempSync, mkdirSync, readFileSync, existsSync, rmSync } from 'node:f
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type {
-  AnalyzeOptions, Manifest, Transcript, Candidate, SelectedFrame, FrameMode, CaptionTrack, ResolveOptions,
+  AnalyzeOptions, Manifest, Transcript, Candidate, SelectedFrame, FrameMode, CaptionTrack, Captions, ResolveOptions,
 } from './types.js';
 import { resolveFrameMode } from './types.js';
 import { resolve } from './resolve/index.js';
@@ -65,6 +65,21 @@ export function usableCaption(
   if (tier === 'asr') return null;
   const track = tier === 'manual' ? captions.manual! : captions.auto!;
   return existsSync(track.path) ? { tier, track } : null;
+}
+
+/**
+ * Why no platform caption could be used even though the source offered one:
+ * the resolver's own retrieval failures, plus a track it reported that is no
+ * longer on disk. Empty when the source simply had no captions -- which is
+ * the distinction transcript.asrReason and the warning exist to make.
+ */
+export function captionFailures(captions: Captions): string[] {
+  const errors = [...(captions.retrievalErrors ?? [])];
+  const tier = chooseCaptionTier(captions);
+  if (tier !== 'asr' && !usableCaption(captions)) {
+    errors.push(`the ${tier} caption file was reported but is missing from disk`);
+  }
+  return errors;
 }
 
 export async function analyzeVideo(url: string, opts: AnalyzeOptions = {}): Promise<Manifest> {
@@ -245,6 +260,7 @@ async function analyzeResolved(
     // and then throw the result away. `audio` stays null until that happens,
     // which is also what the cleanup below keys on.
     let audio: string | null = null;
+    let asrReason: Transcript['asrReason'];
     try {
       // ANY platform caption beats local speech recognition -- manual first,
       // then automatic, with local ASR as the fallback only when the video
@@ -298,7 +314,24 @@ async function analyzeResolved(
             + '(usableCaption disagreed with itself between stage 1 and the transcript stage)',
           );
         }
-        ({ audio } = await extractAudio(media, workDir));
+        // Say which of the two reasons put us here: the source offered no
+        // captions, or it offered some that could not be retrieved. The
+        // second is a degradation -- a platform transcript was lost -- so it
+        // is also a warning; the first is simply what the video is.
+        const captionErrors = captionFailures(res.captions);
+        asrReason = captionErrors.length > 0 ? 'captions_failed' : 'no_captions';
+        if (captionErrors.length > 0) {
+          warnings.push(
+            'platform captions exist but could not be retrieved, so the transcript comes from '
+            + `local speech recognition instead: ${captionErrors.join('; ')}`,
+          );
+        }
+        try {
+          ({ audio } = await extractAudio(media, workDir));
+          if (audio === null) warnings.push('no transcript: the video has no audio track');
+        } catch (e) {
+          warnings.push(`no transcript: ${e instanceof Error ? e.message : String(e)}`);
+        }
       }
       if (transcript === null && audio !== null && existsSync(audio)) {
         // preferredLanguage is passed through (not dropped): pickSenseVoiceLanguage
@@ -323,6 +356,7 @@ async function analyzeResolved(
           warnings.push(`asr failed: ${e instanceof Error ? e.message : String(e)}`);
           return null;
         });
+        if (transcript && asrReason) transcript = { ...transcript, asrReason };
       }
     } finally {
       // Fix 6 (deferred #18, leak half): nothing downstream ever references
