@@ -67,12 +67,21 @@ analysis, speech recognition and vision embedding are still heavy models that mu
 never be resident together — each runs in its own worker process
 (`transcript/asrWorker.ts`, `vision/embedWorker.ts`) that exits before the next
 stage starts. Anything that lets two heavy stages overlap *within an item* is a
-serious defect. Across items, `VIDEO_EXTRACT_MAX_CONCURRENCY` (default 4) caps how
+serious defect. Across items, `VIDEO_EXTRACT_MAX_CONCURRENCY` (default 2) caps how
 many `analyze_video` item executions run at once — plain calls and tasks, batch
-items and separate calls, identically; `resolve_video` is exempt. ~1.1 GB peak per
-concurrent analysis; total footprint ≈ concurrency × 1.1 GB. Default cap 4 ⇒ plan
-for ~4.5 GB worst case. `VIDEO_EXTRACT_MAX_CONCURRENCY=1` restores the old flat
-under-2GB behavior.
+items and separate calls, identically; `resolve_video` is exempt. Peak per concurrent
+analysis is set by the speech model, measured: ~2.0 GB with Whisper (every non-CJK
+video without usable captions), ~1.1 GB with SenseVoice, <1 GB when captions supply
+the transcript. Default cap 2 ⇒ plan for ~4 GB worst case (it was 4, i.e. ~8 GB, until
+0.14.0 measured Whisper). The older "~1.1 GB per
+analysis" figure was the SenseVoice number applied to both engines. What the Whisper
+worker's ~2 GB is: ~0.86 GB to load whisper-small int8 (374 MB on disk), ~0.9 GB more
+on the first decode; thread count does not move it (1.85 GB at 1 thread, 1.94 at 4).
+The worker streams its WAV and decodes each VAD segment as it is emitted
+(`streamVad`, `openPcm16Wav`) -- holding the whole waveform plus every segment cost
+~128 KB per second of audio. What remains length-dependent is a creep inside
+sherpa-onnx of ~0.7 MB per decoded segment that forcing GC does not remove: 2.00 GB
+on a 4.4-minute clip, 2.14 GB on 26 minutes (70 segments). Not measured beyond that.
 
 **0.2.0 is a breaking change to both tools' call shape** (README.md has the full
 note): 0.1.x's top-level `url`/`pathOrUrl` became a required `videos` array, one

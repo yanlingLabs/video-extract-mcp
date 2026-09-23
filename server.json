@@ -32,7 +32,7 @@
         },
         {
           "name": "VIDEO_EXTRACT_MAX_CONCURRENCY",
-          "description": "How many analyses may run at once. Default 4; each costs about 1.1 GB peak.",
+          "description": "How many analyses may run at once. Default 2; each peaks at about 2 GB when Whisper transcribes, 1.1 GB with SenseVoice.",
           "isRequired": false,
           "isSecret": false,
           "format": "string"
