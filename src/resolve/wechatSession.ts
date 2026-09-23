@@ -1,8 +1,11 @@
 import type { CookieUse, ResolveFailure, ResolveStatus } from '../types.js';
 import {
-  browserForCall, openInBrowser, readBrowserJar, parseJar, cookiesFor, cookieHeader,
+  browserForCall, readBrowserJar, parseJar, cookiesFor, cookieHeader,
   browserLabel, promptsForKeychain, realSys, type BrowserChoice, type BrowserSys,
 } from '../util/browsers.js';
+import {
+  presentSignIn, YUANBAO_SITE, DECLINED_MESSAGE, type SignInHandle, type SignInSite,
+} from '../util/signInPage.js';
 import { statusCallbacks } from '../status/context.js';
 
 /**
@@ -12,8 +15,9 @@ import { statusCallbacks } from '../status/context.js';
  * the operator's standing configuration. With it, for that call: the
  * configured cookie if it still works, else the session this process last
  * obtained from the browser, else the browser's own cookie store, else a
- * sign-in page opened in that browser and polled until a session appears or
- * the wait runs out.
+ * sign-in page opened in that browser (src/util/signInPage.ts: a local page
+ * saying why yuanbao, with a button to it) and the store polled until a
+ * session appears or the wait runs out.
  *
  * ## Which cookie is "the right one"
  *
@@ -59,6 +63,10 @@ export interface SessionDeps {
   now(): number;
   sleep(ms: number): Promise<void>;
   signInWaitMs: number;
+  /** Puts the sign-in page in front of the user; null when nothing could be opened. */
+  presentSignIn(
+    site: SignInSite, browser: BrowserChoice, videoUrl: string, deadline: number, requester: string,
+  ): Promise<SignInHandle | null>;
 }
 
 export type Acquired = { ok: true; cred: Credential } | { ok: false; failure: ResolveFailure };
@@ -127,7 +135,10 @@ export class WeChatSession {
     if (this.remembered?.header === header) this.remembered = null;
   }
 
-  async acquire(userCookies: boolean): Promise<Acquired> {
+  /** `page` is only shown on the sign-in page, so the user sees what asked and who. */
+  async acquire(
+    userCookies: boolean, page: { videoUrl?: string; requester?: string } = {},
+  ): Promise<Acquired> {
     const env = this.deps.envCookie();
     if (env) {
       const c = await this.deps.check(env);
@@ -166,7 +177,9 @@ export class WeChatSession {
     const onStage = statusCallbacks()?.onStage;
     if (onStage) this.waiting.add(onStage);
     if (this.signInOpen) onStage?.('waiting_for_sign_in');
-    this.inFlight ??= this.fromBrowser(browser).finally(() => {
+    this.inFlight ??= this.fromBrowser(
+      browser, page.videoUrl ?? YUANBAO_HOME, page.requester ?? 'Agent',
+    ).finally(() => {
       this.inFlight = null;
       this.signInOpen = false;
     });
@@ -177,7 +190,7 @@ export class WeChatSession {
     }
   }
 
-  private async fromBrowser(b: BrowserChoice): Promise<Acquired> {
+  private async fromBrowser(b: BrowserChoice, videoUrl: string, requester: string): Promise<Acquired> {
     const origin: CookieUse = `browser:${b.name}`;
     const label = browserLabel(b.name);
     const keep = (header: string): Acquired => {
@@ -191,8 +204,9 @@ export class WeChatSession {
     // A store the server may not read will not become readable by waiting.
     if (first.kind === 'error') return fail('auth_required', 'none', first.error);
 
-    const opened = await openInBrowser(b, YUANBAO_HOME, this.deps.sys);
-    if (!opened) {
+    const deadline = this.deps.now() + this.deps.signInWaitMs;
+    const page = await this.deps.presentSignIn(YUANBAO_SITE, b, videoUrl, deadline, requester);
+    if (!page) {
       return fail('auth_required', 'none',
         `${label} has no signed-in yuanbao.tencent.com session, and could not be opened for signing in. `
         + `Ask the user to sign in at ${YUANBAO_HOME} in ${label}, then retry with userCookies: true.`);
@@ -201,23 +215,37 @@ export class WeChatSession {
     for (const onStage of this.waiting) onStage('waiting_for_sign_in');
 
     // Chrome-family reads can each raise a Keychain prompt, and Chrome only
-    // writes new cookies to disk about every 30 seconds anyway.
+    // writes new cookies to disk about every 30 seconds anyway. The page's
+    // "I've signed in" button cuts a wait short.
     const interval = promptsForKeychain(b.name) ? 15_000 : 5_000;
-    const deadline = this.deps.now() + this.deps.signInWaitMs;
     // A header getuserinfo already refused is not sent again until it changes.
     let refused = first.kind === 'invalid' ? first.header : null;
     while (this.deps.now() < deadline) {
-      await this.deps.sleep(Math.min(interval, Math.max(0, deadline - this.deps.now())));
+      const woke = await Promise.race([
+        this.deps.sleep(Math.min(interval, Math.max(0, deadline - this.deps.now()))).then(() => 'tick' as const),
+        page.nudge(),
+      ]);
+      if (woke === 'declined') {
+        page.finish('declined');
+        return fail('auth_required', 'none', DECLINED_MESSAGE);
+      }
       const t = await this.tryBrowser(b, refused);
-      if (t.kind === 'valid') return keep(t.header);
-      if (t.kind === 'error') return fail('auth_required', 'none', t.error);
+      if (t.kind === 'valid') {
+        page.finish('signed_in');
+        return keep(t.header);
+      }
+      if (t.kind === 'error') {
+        page.finish('failed', t.error);
+        return fail('auth_required', 'none', t.error);
+      }
       if (t.kind === 'invalid') refused = t.header;
     }
+    page.finish('timed_out');
     const minutes = Math.round(this.deps.signInWaitMs / 60_000);
     return fail('auth_required', 'none',
-      `Opened ${YUANBAO_HOME} in ${label} for the user to sign in, but no signed-in session appeared `
-      + `within ${minutes} minute${minutes === 1 ? '' : 's'}. Ask the user to finish signing in there `
-      + '(the WeChat QR code, or a phone number), then retry with userCookies: true.');
+      `A page in ${label} asked the user to sign in to yuanbao.tencent.com, but no signed-in session `
+      + `appeared within ${minutes} minute${minutes === 1 ? '' : 's'}. Ask the user to finish signing in `
+      + 'there (the WeChat QR code, or a phone number), then retry with userCookies: true.');
   }
 
   private async tryBrowser(b: BrowserChoice, refused: string | null): Promise<BrowserTry> {
@@ -244,5 +272,7 @@ export function defaultSessionDeps(check: SessionDeps['check'], envCookie: Sessi
     now: () => Date.now(),
     sleep: (ms) => new Promise((resolve) => { setTimeout(resolve, ms); }),
     signInWaitMs: SIGN_IN_WAIT_MS,
+    presentSignIn: (site, browser, videoUrl, deadline, requester) =>
+      presentSignIn(site, browser, videoUrl, deadline, requester, realSys),
   };
 }

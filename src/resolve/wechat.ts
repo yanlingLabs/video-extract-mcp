@@ -318,7 +318,7 @@ export class WeChatHeadlessResolver implements VideoResolver {
       // in if need be -- so the download that usually follows finds it ready.
       let cookies: CookieUse = 'none';
       if (userCookies) {
-        const got = await this.session.acquire(true);
+        const got = await this.session.acquire(true, { videoUrl: url, requester: opts.requestedBy });
         if (!got.ok) return got.failure;
         cookies = got.cred.origin;
       } else if (!this.session.hasConfigured()) {
@@ -347,7 +347,7 @@ export class WeChatHeadlessResolver implements VideoResolver {
 
     // Stage 1 (verified): getuserinfo vets the session before a resolve call is
     // spent on it, and renews it (wechatSession.ts) -- both inside acquire().
-    const got = await this.session.acquire(userCookies);
+    const got = await this.session.acquire(userCookies, { videoUrl: url, requester: opts.requestedBy });
     if (!got.ok) return got.failure;
     const r = await this.resolveWith(url, opts, got.cred.header);
     if (r.status === 'auth_expired') this.session.forget(got.cred.header);

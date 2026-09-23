@@ -56,8 +56,11 @@ export interface ResolveVideoItem {
 /** What the resolve sent, recorded as soon as it is known -- a later throw still reports it. */
 interface Sent { cookies: CookieUse }
 
+/** Per call, from the MCP layer: the user's consent, and who asked. */
+interface CallCookies { userCookies: boolean; requestedBy?: string }
+
 async function resolveOneVideoAttempt(
-  item: ResolveVideoItem, destinationPath: string, userCookies: boolean, sent: Sent,
+  item: ResolveVideoItem, destinationPath: string, call: CallCookies, sent: Sent,
 ): Promise<ResolveItemResult> {
   mkdirSync(destinationPath, { recursive: true });
   // Private scratch inside destinationPath, discarded on every exit -- the
@@ -68,20 +71,21 @@ async function resolveOneVideoAttempt(
   sweepAbandonedWorkDirs(destinationPath);
   const workDir = mintWorkDir(destinationPath);
   try {
-    return await resolveInto(item, destinationPath, workDir, userCookies, sent);
+    return await resolveInto(item, destinationPath, workDir, call, sent);
   } finally {
     discardWorkDir(workDir);
   }
 }
 
 async function resolveInto(
-  item: ResolveVideoItem, destinationPath: string, workDir: string, userCookies: boolean, sent: Sent,
+  item: ResolveVideoItem, destinationPath: string, workDir: string, call: CallCookies, sent: Sent,
 ): Promise<ResolveItemResult> {
   const returnVideo = item.returnVideo ?? false;
   const r = await resolve(item.url, {
     workDir,
     returnVideo,
-    userCookies,
+    userCookies: call.userCookies,
+    requestedBy: call.requestedBy,
     comments: item.comments ?? false,
     start: returnVideo ? item.start : undefined,
     end: returnVideo ? item.end : undefined,
@@ -251,11 +255,11 @@ async function resolveInto(
  * 'extractor_failed' result here instead of an uncaught rejection.
  */
 export async function resolveOneVideo(
-  item: ResolveVideoItem, destinationPath: string, userCookies = false,
+  item: ResolveVideoItem, destinationPath: string, userCookies = false, requestedBy?: string,
 ): Promise<ResolveItemResult> {
   const sent: Sent = { cookies: 'none' };
   try {
-    return await resolveOneVideoAttempt(item, destinationPath, userCookies, sent);
+    return await resolveOneVideoAttempt(item, destinationPath, { userCookies, requestedBy }, sent);
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     let metadataPath = join(destinationPath, 'metadata.json');
@@ -276,6 +280,8 @@ export interface ResolveToolArgs {
   videos: ResolveVideoItem[];
   /** Per call: the user allowed their browser session for this one (ResolveOptions.userCookies). */
   userCookies?: boolean;
+  /** Set by the MCP layer, never by the caller: see ResolveOptions.requestedBy. */
+  requestedBy?: string;
 }
 export interface ResolveToolResult { videos: ResolveItemResult[]; }
 
@@ -310,7 +316,7 @@ export async function resolveVideoTool(args: ResolveToolArgs, hooks?: ResolveRun
         onSpawn: (pid, cmd) => hooks?.onSpawn?.(i, pid, cmd),
         onSpawnEnded: () => hooks?.onSpawnEnded?.(i),
       },
-      () => resolveOneVideo(item, itemDir(args.destinationPath, i, n), args.userCookies === true),
+      () => resolveOneVideo(item, itemDir(args.destinationPath, i, n), args.userCookies === true, args.requestedBy),
     );
     // Final whole-branch review, Important finding 2: see
     // analyzeVideoTool's identical wiring (src/agent/analyzeTool.ts) for

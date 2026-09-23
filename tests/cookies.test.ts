@@ -7,6 +7,7 @@ import { join, dirname } from 'node:path';
 import {
   cookieSourceFromEnv, prepareCookies, detectBrowser, retryBrowserFor, CookieConfigError,
 } from '../src/util/cookies.js';
+import { realSys } from '../src/util/browsers.js';
 import { YtDlpResolver } from '../src/resolve/ytdlp.js';
 
 const JAR = '# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tFALSE\t9999999999\tSID\tsecret-value\n';
@@ -392,7 +393,7 @@ describe('userCookies on the yt-dlp path', () => {
     expect(argvOf(f.log)[2]).not.toContain('--cookies');
   }, 30_000);
 
-  it('when refused even with browser cookies, says to sign in there rather than to retry blindly', async () => {
+  it('when refused even with browser cookies, puts a sign-in page in front of the user', async () => {
     const binDir = mkdtempSync(join(tmpdir(), 'vem-privbin-'));
     const workDir = mkdtempSync(join(tmpdir(), 'vem-privwork-'));
     writeFileSync(join(binDir, 'yt-dlp'), '#!/bin/sh\necho "ERROR: [youtube] abc: Private video. Sign in if you have been granted access to this video" >&2\nexit 1\n');
@@ -401,12 +402,24 @@ describe('userCookies on the yt-dlp path', () => {
     process.env['PATH'] = `${binDir}:${prevPath ?? ''}`;
     stubEnv();
     useHomeWithBrowser();
-    const r = await new YtDlpResolver().resolve('https://example.invalid/v', { workDir, returnVideo: false, userCookies: true });
+    // The wait itself is tests/siteSignIn.test.ts's subject; here, only that
+    // this refusal reaches it and what the agent is told when nobody signs in.
+    let now = 0;
+    const presented: string[] = [];
+    const r = await new YtDlpResolver({
+      sys: { ...realSys, exec: async () => ({ code: 1, stdout: '', stderr: '' }) },
+      now: () => now, sleep: async (ms) => { now += ms; }, waitMs: 60_000,
+      present: async (site) => {
+        presented.push(site.host);
+        return { nudge: () => new Promise<'signed_in' | 'declined'>(() => {}), finish: () => {} };
+      },
+    }).resolve('https://example.invalid/v', { workDir, returnVideo: false, userCookies: true });
     const f = r as { status: string; message: string; cookies?: string };
+    expect(presented).toEqual(['example.invalid']);
     expect(f.status).toBe('auth_required');
     expect(f.cookies).toMatch(/^browser:/);
-    expect(f.message).toMatch(/refused even with \S+'s cookies/);
-    expect(f.message).toMatch(/sign in to it in/);
+    expect(f.message).toMatch(/A page in \S+ asked the user to sign in to example\.invalid, but no sign-in was noticed/);
+    expect(f.message).toMatch(/retry with userCookies: true/);
   }, 30_000);
 });
 
