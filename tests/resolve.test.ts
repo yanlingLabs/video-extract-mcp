@@ -183,9 +183,11 @@ describe('resolver canResolve predicates', () => {
 
 describe('WeChatHeadlessResolver without credentials', () => {
   // Hermetic regardless of the ambient shell: without this, a developer machine or CI runner
-  // that happens to export NORMA_WECHAT_COOKIE (e.g. for manual testing) would make this suite
-  // silently start issuing real requests to yuanbao.tencent.com.
-  beforeEach(() => { vi.stubEnv('NORMA_WECHAT_COOKIE', ''); });
+  // that happens to export either cookie variable (e.g. for manual testing) would make this
+  // suite silently start issuing real requests to yuanbao.tencent.com. The documented name
+  // must be REMOVED, not blanked: getCredential() reads it with `??`, so an empty string
+  // would hide the legacy name the other suites set.
+  beforeEach(() => { vi.stubEnv('VIDEO_EXTRACT_WECHAT_COOKIE', undefined); vi.stubEnv('NORMA_WECHAT_COOKIE', ''); });
   afterEach(() => { vi.unstubAllEnvs(); });
 
   it('returns auth_required rather than throwing', async () => {
@@ -214,6 +216,7 @@ describe('WeChat credential never leaks into a failure message', () => {
     // message must never reach a returned ResolveFailure: src/types.ts's Manifest.source.reason
     // persists it to disk, and callers may log it.
     const marker = 'X-Evil-Injected-Header-MARKER';
+    vi.stubEnv('VIDEO_EXTRACT_WECHAT_COOKIE', undefined);
     vi.stubEnv('NORMA_WECHAT_COOKIE', `sessionid=abc123\n${marker}: leaked`);
     const w = new WeChatHeadlessResolver();
     const r = await w.resolve('https://weixin.qq.com/sph/abc', { workDir: '/tmp' });
@@ -460,7 +463,7 @@ describe('WeChatHeadlessResolver.resolve() against a stubbed network (hermetic, 
   let workDir: string;
   beforeEach(() => {
     workDir = mkdtempSync(join(tmpdir(), 'norma-wechat-work-'));
-    vi.stubEnv('NORMA_WECHAT_COOKIE', 'sessionid=test-fixture-cookie');
+    vi.stubEnv('VIDEO_EXTRACT_WECHAT_COOKIE', undefined); vi.stubEnv('NORMA_WECHAT_COOKIE', 'sessionid=test-fixture-cookie');
   });
   afterEach(() => {
     vi.unstubAllEnvs();
@@ -738,7 +741,7 @@ describe('YtDlpResolver metadata-only mode (returnVideo:false, spec §2.1)', () 
 });
 
 describe('WeChatHeadlessResolver metadata-only mode (returnVideo:false, spec §2.1)', () => {
-  beforeEach(() => { vi.stubEnv('NORMA_WECHAT_COOKIE', 'sessionid=test-fixture-cookie'); });
+  beforeEach(() => { vi.stubEnv('VIDEO_EXTRACT_WECHAT_COOKIE', undefined); vi.stubEnv('NORMA_WECHAT_COOKIE', 'sessionid=test-fixture-cookie'); });
   afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); });
 
   it('performs NO network activity at all when returnVideo is false, even with a valid credential present', async () => {
