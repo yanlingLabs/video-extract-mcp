@@ -20,6 +20,13 @@ Built for AI agents. Three MCP tools, no cloud, no API keys, no Python.
 
 ---
 
+```bash
+claude mcp add --scope user video-extract -- npx -y @yanlinglabs/video-extract-mcp@latest
+```
+```bash
+codex mcp add video-extract -- npx -y @yanlinglabs/video-extract-mcp@latest
+```
+
 ## What it can do
 
 **Get the video, from almost anywhere.** Paste a link and it resolves: YouTube, TikTok, Instagram, X, Facebook and Reels, Twitch, Vimeo, Reddit, WeChat Channels, a bare `.mp4` or `.m3u8`, or a page on a site nobody has heard of. Local files work too. Anything unsupported comes back as a clear failure rather than a crash.
