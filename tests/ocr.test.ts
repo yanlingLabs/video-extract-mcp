@@ -335,6 +335,38 @@ describe('computeTextNovelty (review round 2, finding 2: persistence-aware conte
     expect(persisting.textNovelty!).toBeGreaterThan(churning.textNovelty!);
   });
 
+  it('gives text VANISHING no novelty: the frame after a flashed overlay is not new_text', () => {
+    // Real-run regression: 14 of 35 selected frames of a music video carried
+    // `new_text` with empty ocrContent. textDelta is symmetric, so "text ->
+    // nothing" scored 1 on the empty frame while the frame that actually
+    // showed the text was discounted as churn. Pinned exactly: the flashed
+    // frame keeps its transient discount (0.1), the empty ones score 0.
+    const out = computeTextNovelty([
+      cand({ timestamp: 0, ocrContent: '', ocrSubtitle: '' }),
+      cand({ timestamp: 5, ocrContent: 'hello world a b', ocrSubtitle: '' }),
+      cand({ timestamp: 10, ocrContent: '', ocrSubtitle: '' }),
+      cand({ timestamp: 15, ocrContent: '', ocrSubtitle: '' }),
+    ]);
+    expect(out.map((c) => Number(c.textNovelty!.toFixed(6)))).toEqual([0, 0.1, 0, 0]);
+  });
+
+  it('gives a subtitle VANISHING no novelty either', () => {
+    const out = computeTextNovelty([
+      cand({ timestamp: 0, ocrContent: 'same slide', ocrSubtitle: 'and then I said' }),
+      cand({ timestamp: 5, ocrContent: 'same slide', ocrSubtitle: '' }),
+    ]);
+    expect(out[1]!.textNovelty).toBe(0);
+  });
+
+  it('gives FULL weight to text that appears on an empty frame and holds', () => {
+    const out = computeTextNovelty([
+      cand({ timestamp: 0, ocrContent: '', ocrSubtitle: '' }),
+      cand({ timestamp: 5, ocrContent: 'quarterly results overview', ocrSubtitle: '' }),
+      cand({ timestamp: 10, ocrContent: 'quarterly results overview', ocrSubtitle: '' }),
+    ]);
+    expect(out[1]!.textNovelty).toBe(1);
+  });
+
   it('does NOT discount a content change at the LAST candidate, where there is no next frame to test persistence against', () => {
     // Documents a deliberate tradeoff (see src/vision/ocr.ts comment): with
     // no future candidate to check, there is no evidence of churn, so we do
