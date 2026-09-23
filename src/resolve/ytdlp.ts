@@ -10,6 +10,8 @@ import {
   CookieConfigError, type PreparedCookies, type CookieSource,
 } from '../util/cookies.js';
 import { browserForCall, browserLabel, userCookiesHint } from '../util/browsers.js';
+import { siteHost } from '../util/signInPage.js';
+import { waitForSiteSignIn, MAX_RETRIES, DECLINED_MESSAGE, type SiteSignInDeps } from './siteSignIn.js';
 import { probe } from '../media/ffmpeg.js';
 import { baseLang } from '../transcript/routing.js';
 import { statusCallbacks } from '../status/context.js';
@@ -381,6 +383,9 @@ function withoutManualSubs(args: string[]): string[] {
 
 export class YtDlpResolver implements VideoResolver {
   readonly name = 'ytdlp';
+
+  /** `signIn` is injectable so tests can drive the sign-in wait without a browser. */
+  constructor(private readonly signIn?: SiteSignInDeps) {}
   canResolve(url: string): boolean { return /^https?:\/\//i.test(url); }
 
   async resolve(url: string, opts: ResolveOptions): Promise<ResolveResult> {
@@ -557,16 +562,58 @@ export class YtDlpResolver implements VideoResolver {
               : userCookiesHint(await browserForCall());
             return { ...failure, message: `${failure.message} ${hint}` };
           }
-          if (failure.status === 'auth_required' && used.cookies.startsWith('browser:')) {
-            const label = browserLabel(used.cookies.slice('browser:'.length));
+          if (failure.status !== 'auth_required' || !used.cookies.startsWith('browser:')) return failure;
+          const label = browserLabel(used.cookies.slice('browser:'.length));
+          const host = siteHost(url);
+          if (!userBrowser) {
+            // The browser came from the standing configuration: nobody said
+            // yes to a sign-in page for this call.
             return {
               ...failure,
               message: `${failure.message} This was refused even with ${label}'s cookies, so the user is `
-                + `probably not signed in to this site there. Ask them to sign in to it in ${label}, then `
-                + 'retry with userCookies: true.',
+                + `probably not signed in to ${host} there. Ask them to sign in to it in ${label}, then retry.`,
             };
           }
-          return failure;
+          // The user allowed their browser for this call and is still refused:
+          // show them a page saying where to sign in, and retry once they have
+          // (src/resolve/siteSignIn.ts).
+          const waited = await waitForSiteSignIn({
+            videoUrl: url,
+            browser: userBrowser,
+            retry: () => {
+              // The retry is the run that moves the bytes, if any.
+              if (wantsDownload) statusCallbacks()?.onStage?.('downloading');
+              return runYtDlp([]);
+            },
+            verdict: (x) => (x.code === 0 ? 'ok'
+              : classifyYtDlpError(x.stderr).status === 'auth_required' ? 'refused' : 'other'),
+            requester: opts.requestedBy,
+            deps: this.signIn,
+          });
+          if (waited.outcome === 'signed_in' && waited.last) {
+            r = waited.last;
+          } else if (waited.outcome === 'other' && waited.last) {
+            return classifyYtDlpError(waited.last.stderr);
+          } else if (waited.outcome === 'declined') {
+            return { ...failure, message: `${failure.message} ${DECLINED_MESSAGE}` };
+          } else {
+            const why = waited.outcome === 'not_opened'
+              ? `This was refused even with ${label}'s cookies, and no sign-in page could be opened in ${label}.`
+              : waited.outcome === 'gave_up'
+                ? `A page in ${label} asked the user to sign in to ${host}, and it was still refused after `
+                  + `${MAX_RETRIES} tries once they had, so this account probably cannot access the video `
+                  + '(private, members-only, or region-locked).'
+                : waited.retries === 0
+                  ? `A page in ${label} asked the user to sign in to ${host}, but no sign-in was noticed `
+                    + 'before the wait ended.'
+                  : `A page in ${label} asked the user to sign in to ${host}, but it was still refused when `
+                    + 'the wait ended.';
+            return {
+              ...failure,
+              message: `${failure.message} ${why} Ask the user to check they are signed in to ${host} in `
+                + `${label}, then retry with userCookies: true.`,
+            };
+          }
         }
       }
       let meta: YtDlpMeta = {};

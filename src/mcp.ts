@@ -9,6 +9,7 @@ import { analyzeVideoTool, itemDir, type AnalyzeToolArgs, type AnalyzeToolResult
 import { resolveVideoTool, type ResolveToolArgs } from './agent/resolveTool.js';
 import { createSlotPool, analyzeConcurrencyFromEnv, taskTtlMsFromEnv, type SlotPool } from './agent/slots.js';
 import { createStatusRegistry, type StatusRegistry } from './status/registry.js';
+import { requesterLabel } from './util/signInPage.js';
 import { createResultStore, type ResultStore } from './agent/resultStore.js';
 import { sweepLegacyResolveTempDirs } from './agent/workdir.js';
 import { startStatusEndpoint, statusPortFromEnv } from './status/endpoint.js';
@@ -73,11 +74,11 @@ const USER_COOKIES = z.boolean().optional().default(false).describe(
   'Use the user\'s own browser session for this call only. NEVER set it on your own: ask the user '
   + 'first, every time -- it reads their browser\'s cookies, and nothing carries over to later '
   + 'calls. Cookies come from their default browser (or an installed one this server can read, when '
-  + 'the default is unsupported; cookies in the reply names it) and go only to the site being fetched. For '
-  + 'WeChat Channels, if that browser holds no signed-in yuanbao.tencent.com session, the call '
-  + 'opens the site there and waits up to 3 minutes for them to sign in before returning -- tell '
-  + 'the user to expect that. Chrome-family browsers show a macOS Keychain prompt when read. '
-  + 'Default false.',
+  + 'the default is unsupported; cookies in the reply names it) and go only to the site being fetched. '
+  + 'If the user needs to sign in -- no yuanbao.tencent.com session for WeChat Channels, or any other '
+  + 'site still refusing with their cookies -- the call opens a page in that browser saying which site '
+  + 'to sign in to and why, and waits up to 3 minutes for them before returning. Tell the user to '
+  + 'expect that. Chrome-family browsers show a macOS Keychain prompt when read. Default false.',
 );
 
 const SERVER_INSTRUCTIONS =
@@ -645,7 +646,10 @@ export function buildServer(opts?: { analyzeSlots?: SlotPool; statusPort?: numbe
           await extra.taskStore.updateTaskStatus(task.taskId, 'working', `status: ${su}`);
           handleTask = (await extra.taskStore.getTask(task.taskId)) ?? task;
         }
-        const typedArgs = args as AnalyzeToolArgs;
+        // Who asked, as the user knows them -- named on a sign-in page (src/util/signInPage.ts).
+        const typedArgs: AnalyzeToolArgs = {
+          ...(args as AnalyzeToolArgs), requestedBy: requesterLabel(server.server.getClientVersion()?.name),
+        };
         const itemUrls = typedArgs.videos.map((v) => v.pathOrUrl);
         const ids = registerItems(
           statusRegistry, 'analyze', typedArgs.destinationPath,
@@ -812,7 +816,9 @@ export function buildServer(opts?: { analyzeSlots?: SlotPool; statusPort?: numbe
           await extra.taskStore.updateTaskStatus(task.taskId, 'working', `status: ${su}`);
           handleTask = (await extra.taskStore.getTask(task.taskId)) ?? task;
         }
-        const typedArgs = args as ResolveToolArgs;
+        const typedArgs: ResolveToolArgs = {
+          ...(args as ResolveToolArgs), requestedBy: requesterLabel(server.server.getClientVersion()?.name),
+        };
         const itemUrls = args.videos.map((v) => v.url);
         const ids = registerItems(
           statusRegistry, 'resolve', typedArgs.destinationPath,

@@ -28,6 +28,14 @@ interface Harness {
   deps: SessionDeps;
   reads: number;
   launched: string[][];
+  /** Each sign-in page shown: [site, browser, video]. */
+  presented: string[][];
+  /** How each page ended. */
+  finished: string[];
+  /** Presses a button on the page, once the loop is waiting on it. */
+  pressed: Array<(press: 'signed_in' | 'declined') => void>;
+  /** When set, presentSignIn fails as if nothing could be opened. */
+  cannotOpen?: boolean;
   checked: string[];
   /** What each successive browser read returns; the last one repeats. */
   jars: string[];
@@ -40,10 +48,14 @@ interface Harness {
  * getuserinfo that accepts exactly GOOD (renewing its token) and refuses
  * anything else.
  */
-function harness(over: { env?: string | null; jars?: string[]; defaultBrowser?: 'chrome'; check?: SessionDeps['check'] } = {}): Harness {
+function harness(over: {
+  env?: string | null; jars?: string[]; defaultBrowser?: 'chrome'; check?: SessionDeps['check'];
+  /** The poll's sleep never ends, so only the page's button can move the wait on. */
+  sleepForever?: boolean;
+} = {}): Harness {
   let now = 1_800_000_000_000;
   const h: Harness = {
-    reads: 0, launched: [], checked: [], jars: over.jars ?? [SIGNED_OUT],
+    reads: 0, launched: [], checked: [], jars: over.jars ?? [SIGNED_OUT], presented: [], finished: [], pressed: [],
     deps: undefined as unknown as SessionDeps,
   };
   const sys: BrowserSys = {
@@ -79,8 +91,16 @@ function harness(over: { env?: string | null; jars?: string[]; defaultBrowser?: 
     }),
     sys,
     now: () => now,
-    sleep: async (ms) => { now += ms; },
+    sleep: over.sleepForever ? () => new Promise<void>(() => {}) : async (ms) => { now += ms; },
     signInWaitMs: SIGN_IN_WAIT_MS,
+    presentSignIn: async (site, browser, videoUrl) => {
+      if (h.cannotOpen) return null;
+      h.presented.push([site.host, browser.name, videoUrl]);
+      return {
+        nudge: () => new Promise<'signed_in' | 'declined'>((resolve) => { h.pressed.push(resolve); }),
+        finish: (outcome, detail) => { h.finished.push(detail ? `${outcome}: ${detail}` : outcome); },
+      };
+    },
   };
   return h;
 }
@@ -105,7 +125,7 @@ describe('without userCookies: the configured cookie only, as before', () => {
     expect(f.cookies).toBe('wechat_cookie');
     expect(f.message).toMatch(/Ask the user whether to retry with userCookies: true/);
     expect(h.reads).toBe(0);
-    expect(h.launched).toEqual([]);
+    expect(h.presented).toEqual([]);
   });
 
   it('with nothing configured, fails before any request', async () => {
@@ -125,7 +145,7 @@ describe('with userCookies', () => {
     expect(a).toEqual({ ok: true, cred: { header: 'hy_user=U; hy_token=RENEWED', origin: 'browser:safari' } });
     // What went to getuserinfo is exactly what a browser would send it.
     expect(h.checked).toEqual([GOOD]);
-    expect(h.launched).toEqual([]);
+    expect(h.presented).toEqual([]);
   });
 
   it('prefers a configured cookie that still works over reading the browser', async () => {
@@ -152,9 +172,44 @@ describe('with userCookies', () => {
     const stages: string[] = [];
     const a = await runWithStatus({ onStage: (s) => stages.push(s) }, () => new WeChatSession(h.deps).acquire(true));
     expect(a.ok && a.cred.origin).toBe('browser:safari');
-    expect(h.launched).toEqual([['open', '-b', 'com.apple.safari', 'https://yuanbao.tencent.com/']]);
+    // A page explaining the sign-in, in the browser the cookies are read from.
+    expect(h.presented).toEqual([['yuanbao.tencent.com', 'safari', 'https://yuanbao.tencent.com/']]);
+    expect(h.finished).toEqual(['signed_in']);
     expect(stages).toEqual(['waiting_for_sign_in']);
     expect(h.reads).toBe(4);
+  });
+
+  it('"I\'ve signed in" on the page checks at once instead of waiting for the next poll', async () => {
+    const h = harness({ jars: [SIGNED_OUT, SIGNED_IN], sleepForever: true });
+    const pending = new WeChatSession(h.deps).acquire(true, { videoUrl: 'https://weixin.qq.com/sph/abc' });
+    await vi.waitFor(() => expect(h.pressed.length).toBe(1));
+    h.pressed[0]!('signed_in');
+    const a = await pending;
+    expect(a.ok && a.cred.origin).toBe('browser:safari');
+    expect(h.presented).toEqual([['yuanbao.tencent.com', 'safari', 'https://weixin.qq.com/sph/abc']]);
+    expect(h.finished).toEqual(['signed_in']);
+  });
+
+  it('"Don\'t sign in" ends the wait at once and tells the agent not to retry', async () => {
+    const h = harness({ jars: [SIGNED_OUT], sleepForever: true });
+    const pending = new WeChatSession(h.deps).acquire(true);
+    await vi.waitFor(() => expect(h.pressed.length).toBe(1));
+    h.pressed[0]!('declined');
+    const f = failureOf(await pending);
+    expect(f.status).toBe('auth_required');
+    expect(f.message).toMatch(/chose not to sign in/);
+    expect(f.message).toMatch(/Do not retry with userCookies unless they ask/);
+    expect(h.finished).toEqual(['declined']);
+    expect(h.reads).toBe(1);
+  });
+
+  it('says so when not even the sign-in page could be opened', async () => {
+    const h = harness({ jars: [SIGNED_OUT] });
+    h.cannotOpen = true;
+    const f = failureOf(await new WeChatSession(h.deps).acquire(true));
+    expect(f.status).toBe('auth_required');
+    expect(f.message).toMatch(/could not be opened for signing in/);
+    expect(h.reads).toBe(1);
   });
 
   it('gives up after the wait with a message the agent can pass on, and bounded polling', async () => {
@@ -162,10 +217,11 @@ describe('with userCookies', () => {
     const f = failureOf(await new WeChatSession(h.deps).acquire(true));
     expect(f.status).toBe('auth_required');
     expect(f.cookies).toBe('none');
-    expect(f.message).toMatch(/Opened https:\/\/yuanbao\.tencent\.com\/ in Safari/);
+    expect(f.message).toMatch(/A page in Safari asked the user to sign in to yuanbao\.tencent\.com/);
     expect(f.message).toMatch(/within 3 minutes/);
     expect(f.message).toMatch(/retry with userCookies: true/);
-    expect(h.launched.length).toBe(1);
+    expect(h.presented.length).toBe(1);
+    expect(h.finished).toEqual(['timed_out']);
     // One read up front, then one every 5 seconds for 3 minutes.
     expect(h.reads).toBe(1 + SIGN_IN_WAIT_MS / 5_000);
   });
@@ -180,7 +236,7 @@ describe('with userCookies', () => {
   it('polls a Keychain-prompting browser three times less often', async () => {
     const h = harness({ jars: [SIGNED_OUT], defaultBrowser: 'chrome' });
     await new WeChatSession(h.deps).acquire(true);
-    expect(h.launched).toEqual([['open', '-b', 'com.google.chrome', 'https://yuanbao.tencent.com/']]);
+    expect(h.presented).toEqual([['yuanbao.tencent.com', 'chrome', 'https://yuanbao.tencent.com/']]);
     expect(h.reads).toBe(1 + SIGN_IN_WAIT_MS / 15_000);
   });
 
@@ -193,7 +249,7 @@ describe('with userCookies', () => {
       runWithStatus({ onStage: (x) => stages.push(`b:${x}`) }, () => s.acquire(true)),
     ]);
     expect(a).toEqual(b);
-    expect(h.launched.length).toBe(1);
+    expect(h.presented.length).toBe(1);
     expect(h.reads).toBe(2);
     expect(stages.sort()).toEqual(['a:waiting_for_sign_in', 'b:waiting_for_sign_in']);
   });
@@ -203,7 +259,7 @@ describe('with userCookies', () => {
     h.readError = "ERROR: [Errno 1] Operation not permitted: '/Users/x/Library/Containers/com.apple.Safari/...'";
     const f = failureOf(await new WeChatSession(h.deps).acquire(true));
     expect(f.message).toMatch(/Full Disk Access/);
-    expect(h.launched).toEqual([]);
+    expect(h.presented).toEqual([]);
   });
 
   it('forgets a remembered session yuanbao later rejected', async () => {
@@ -285,6 +341,14 @@ describe('the resolver uses the renewed session', () => {
     expect(r.status).toBe('ok');
     expect(r.cookies).toBe('none');
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('names the video the user asked for on the sign-in page', async () => {
+    const h = harness({ jars: [SIGNED_OUT, SIGNED_IN] });
+    const r = await new WeChatHeadlessResolver(new WeChatSession(h.deps))
+      .resolve('https://weixin.qq.com/sph/abc', { workDir: tmpdir(), returnVideo: false, userCookies: true });
+    expect(r.status).toBe('ok');
+    expect(h.presented).toEqual([['yuanbao.tencent.com', 'safari', 'https://weixin.qq.com/sph/abc']]);
   });
 
   it('a metadata-only call WITH userCookies acquires the session, so the download finds it ready', async () => {

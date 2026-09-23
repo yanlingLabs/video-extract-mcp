@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname, resolve as resolvePath } from 'node:path';
@@ -175,4 +175,19 @@ describe.skipIf(!hasYtDlp())('readBrowserJar against the real yt-dlp', () => {
     expect(r.error).toMatch(/No cookie store was found for firefox/i);
     expect(r.error).not.toMatch(/Extracting|ERROR/);
   }, 30_000);
+});
+
+describe('the test-only launch guard', () => {
+  it('stops realSys from starting anything while VIDEO_EXTRACT_NO_LAUNCH is set', async () => {
+    // vitest.config.ts sets it for the whole suite; without it, a test that
+    // forgot its fakes once opened a real sign-in page in the developer's Safari.
+    expect(process.env['VIDEO_EXTRACT_NO_LAUNCH']).toBeTruthy();
+    expect(await realSys.launch('true', [])).toBe(false);
+    vi.stubEnv('VIDEO_EXTRACT_NO_LAUNCH', undefined);
+    try {
+      expect(await realSys.launch('true', [])).toBe(true);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
 });

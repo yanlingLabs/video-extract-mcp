@@ -48,6 +48,10 @@ export const realSys: BrowserSys = {
   get home() { return process.env['HOME'] ?? process.env['USERPROFILE'] ?? ''; },
   exec: (cmd, args, timeoutMs) => run(cmd, args, { timeoutMs }),
   launch: (cmd, args) => new Promise((resolve) => {
+    // TEST-FACING, like VIDEO_EXTRACT_CACHE_DIR: the suite sets it so a test
+    // that forgets to inject a fake fails fast instead of opening the
+    // developer's browser (one did, before this existed).
+    if (process.env['VIDEO_EXTRACT_NO_LAUNCH']) { resolve(false); return; }
     try {
       const child = spawn(cmd, args, { detached: true, stdio: 'ignore' });
       child.once('spawn', () => { child.unref(); resolve(true); });

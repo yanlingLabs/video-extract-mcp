@@ -199,9 +199,24 @@ a real mistake or were measured:
   session; everything the browser would send to that URL is sent anyway.
 - **No cookie value reaches a message.** yt-dlp's output is never forwarded from the jar
   read (stdout can hold cookies); failures are fixed sentences. Tests grep for a marker.
-- **The WeChat sign-in wait is bounded** (3 minutes) and counts as execution, so the
+- **A sign-in is asked for on our own page, never by opening a login cold**
+  (`src/util/signInPage.ts`, 127.0.0.1, random port and path, exact-Host and Origin
+  checks, nonce CSP, everything escaped, unref'd). It carries no credential. A bare
+  yuanbao.tencent.com login popping up was alarming in real use, and the page's first
+  version, a card of explanations and buttons, still "looked like a scam". The page is
+  now the user's own design: a few centred lines of monospace text naming the MCP client
+  (`requesterLabel(getClientVersion().name)`; Claude Code sends "Claude Code"), the
+  missing cookies, and the sign-in URL in green, plus "[don't sign in]", which ends the
+  wait at once. Keep it that plain.
+- **Sign-in waits are bounded** (3 minutes) and count as execution, so the
   honest-cancel rule makes the item uncancellable while it waits; the tool description
-  tells the agent the call may wait that long. Concurrent items share one read and one sign-in page.
+  tells the agent the call may wait that long. Concurrent WeChat items share one read and
+  one page.
+- **A yt-dlp site gets a retry only on a sign-in signal** (`src/resolve/siteSignIn.ts`):
+  the page's button, or a new cookie NAME for that host. Never on a timer, and never on
+  value churn -- every retry is a request to the platform, and repeated ones provoke its
+  rate limiter. At most 3. Only for a `userCookies` call: a browser from the environment
+  gets the old one-line hint, since nobody said yes to a page.
 - **The WeChat session is process-lifetime module state, on purpose** -- an exception to
   the per-`buildServer()` rule above, because a session has to outlive the call that got
   it. It hangs off `DEFAULT_RESOLVERS`' `WeChatHeadlessResolver`; a test that needs
@@ -324,6 +339,8 @@ deferred item with its reasoning — check it before "discovering" a known gap.
   `VIDEO_EXTRACT_COOKIES_FILE`, `VIDEO_EXTRACT_COOKIES_FROM_BROWSER`,
   `VIDEO_EXTRACT_AUTO_FETCH_MODELS`,
   `VIDEO_EXTRACT_MAX_CONCURRENCY`, `VIDEO_EXTRACT_TASK_TTL_MS`,
-  `VIDEO_EXTRACT_STATUS_PORT` (README has the full table)
+  `VIDEO_EXTRACT_STATUS_PORT` (README has the full table). TEST-FACING only:
+  `VIDEO_EXTRACT_CACHE_DIR`, and `VIDEO_EXTRACT_NO_LAUNCH` (set by vitest.config.ts so a
+  test can never open the developer's browser or post a notification)
 - WeChat resolution was **clean-room derived**; the well-known reference
   implementation is MIT + Commons Clause. Never consult it when extending that code.

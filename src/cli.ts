@@ -40,7 +40,7 @@ export function parseArgs(argv: string[]): { url: string; opts: AnalyzeOptions }
     else if (a === '--out') { const v = next(); if (v !== undefined) opts.outDir = v; }
     else if (a === '--no-transcript') opts.transcript = false;
     // Typed by the person running it, which is the consent userCookies needs.
-    else if (a === '--user-cookies') opts.userCookies = true;
+    else if (a === '--user-cookies') { opts.userCookies = true; opts.requestedBy = 'The video-extract command'; }
   }
   return { url, opts };
 }

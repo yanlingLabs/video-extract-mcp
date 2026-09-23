@@ -171,6 +171,7 @@ async function analyzeResolved(
   const resolveOpts: ResolveOptions = {
     start: opts.start, end: opts.end, workDir, preferredLanguage: opts.preferredLanguage,
     userCookies: opts.userCookies,
+    requestedBy: opts.requestedBy,
   };
   let res = await resolve(url, mightSkipMedia ? { ...resolveOpts, returnVideo: false } : resolveOpts);
   // Phase 2: the cheap pass produced no media and the transcript will need

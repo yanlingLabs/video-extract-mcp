@@ -74,7 +74,9 @@ async function fetchPayload(entry: ServerEntry, urls: string[]): Promise<StatusP
 
 /** The chain is exactly the RAW stage strings the registry recorded (spec
  *  §3/§4: 'resolving' | 'downloading' | 'transcribing' | 'frames' for
- *  analyze items, 'downloading' only for a returnVideo:true resolve item),
+ *  analyze items, 'downloading' only for a returnVideo:true resolve item, and
+ *  'waiting_for_sign_in' on either while a userCookies call waits for the
+ *  user to sign in),
  *  joined with the arrow the brief's render rules specify -- never a
  *  paraphrase invented for readability.
  *

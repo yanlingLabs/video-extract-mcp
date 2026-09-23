@@ -442,6 +442,13 @@ describe('analyze_video: userCookies and what was sent', () => {
     expect(analyzeMock.mock.calls.map((c) => (c[1] as { userCookies?: boolean }).userCookies)).toEqual([true, false]);
   });
 
+  it('passes on who asked, for the sign-in page to name', async () => {
+    analyzeMock.mockResolvedValue(manifest());
+    const dir = mkdtempSync(join(tmpdir(), 'norma-at-rb-'));
+    await analyzeVideoTool({ destinationPath: dir, videos: [{ pathOrUrl: 'https://x/v' }], userCookies: true, requestedBy: 'Claude Code' });
+    expect((analyzeMock.mock.calls[0]![1] as { requestedBy?: string }).requestedBy).toBe('Claude Code');
+  });
+
   it("reports the manifest's cookies on the item", async () => {
     analyzeMock.mockResolvedValue(manifest({
       source: { url: 'u', platform: 'p', title: 'T', duration: 10, resolvedBy: 'wechat', status: 'ok', cookies: 'browser:safari' },

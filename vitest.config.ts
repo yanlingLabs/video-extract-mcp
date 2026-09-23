@@ -22,6 +22,10 @@ export default defineConfig({
       // failed whenever the runner was slow. Tests of the fetch itself opt
       // back in against a local fake host (tests/fetchModels.integration.test.ts).
       VIDEO_EXTRACT_AUTO_FETCH_MODELS: '0',
+      // Never open a browser window or a notification from a test: a sign-in
+      // flow that reaches the real opener fails as "could not be opened"
+      // instead (src/util/browsers.ts realSys.launch).
+      VIDEO_EXTRACT_NO_LAUNCH: '1',
     },
   },
 });

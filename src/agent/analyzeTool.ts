@@ -55,7 +55,7 @@ function isLocalPath(pathOrUrl: string): boolean {
 
 async function analyzeOneVideoAttempt(
   item: AnalyzeVideoItem, destinationPath: string, onStage: ((stage: AnalyzeStage) => void) | undefined,
-  userCookies: boolean,
+  userCookies: boolean, requestedBy: string | undefined,
 ): Promise<AnalyzeItemResult> {
   mkdirSync(destinationPath, { recursive: true });
 
@@ -92,6 +92,7 @@ async function analyzeOneVideoAttempt(
       onStage,
       outDir: workDir,
       userCookies,
+      requestedBy,
     });
 
     // Move the deliverables out of the scratch directory: the SELECTED
@@ -157,10 +158,10 @@ async function analyzeOneVideoAttempt(
  */
 export async function analyzeOneVideo(
   item: AnalyzeVideoItem, destinationPath: string, onStage?: (stage: AnalyzeStage) => void,
-  userCookies = false,
+  userCookies = false, requestedBy?: string,
 ): Promise<AnalyzeItemResult> {
   try {
-    return await analyzeOneVideoAttempt(item, destinationPath, onStage, userCookies);
+    return await analyzeOneVideoAttempt(item, destinationPath, onStage, userCookies, requestedBy);
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     let manifestPath = join(destinationPath, 'manifest.json');
@@ -190,6 +191,8 @@ export interface AnalyzeToolArgs {
   videos: AnalyzeVideoItem[];
   /** Per call: the user allowed their browser session for this one (ResolveOptions.userCookies). */
   userCookies?: boolean;
+  /** Set by the MCP layer, never by the caller: see ResolveOptions.requestedBy. */
+  requestedBy?: string;
 }
 export interface AnalyzeToolResult { videos: AnalyzeItemResult[]; }
 export interface AnalyzeRunHooks {
@@ -266,7 +269,7 @@ export async function analyzeVideoTool(
           // same way runWithStatus() already closes the context path.
           () => analyzeOneVideo(
             item, itemDir(args.destinationPath, i, n), safe((s: AnalyzeStage) => hooks?.onStage?.(i, s)),
-            args.userCookies === true,
+            args.userCookies === true, args.requestedBy,
           ),
         );
       },

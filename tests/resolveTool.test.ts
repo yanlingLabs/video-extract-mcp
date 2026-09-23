@@ -551,6 +551,13 @@ describe('resolve_video: userCookies and what was sent', () => {
     expect(resolveMock.mock.calls.map((c) => (c[1] as { userCookies?: boolean }).userCookies)).toEqual([true, false]);
   });
 
+  it('passes on who asked, for the sign-in page to name', async () => {
+    resolveMock.mockResolvedValue(ok());
+    const dir = mkdtempSync(join(tmpdir(), 'norma-rt-rb-'));
+    await resolveVideoTool({ destinationPath: dir, videos: [{ url: 'https://x/v' }], userCookies: true, requestedBy: 'Claude Code' });
+    expect((resolveMock.mock.calls[0]![1] as { requestedBy?: string }).requestedBy).toBe('Claude Code');
+  });
+
   it('reports cookies on every item, success or failure, and records it in metadata.json', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'norma-rt-ck-'));
     resolveMock.mockResolvedValueOnce(ok({ cookies: 'browser:safari' }));

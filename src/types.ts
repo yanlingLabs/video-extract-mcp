@@ -119,6 +119,11 @@ export interface ResolveOptions {
    * remembered as permission -- see src/resolve/wechatSession.ts.
    */
   userCookies?: boolean;
+  /**
+   * Who asked, as the user knows them ("Claude Code"): named on the sign-in
+   * page so the user recognises a request they made (src/util/signInPage.ts).
+   */
+  requestedBy?: string;
 }
 
 export interface VideoResolver {
@@ -223,6 +228,8 @@ export interface AnalyzeOptions {
   outDir?: string;
   /** Passed through to the resolver: see ResolveOptions.userCookies. */
   userCookies?: boolean;
+  /** Passed through to the resolver: see ResolveOptions.requestedBy. */
+  requestedBy?: string;
   /** Called at pipeline seams; only for stages that actually run. A call
    *  means the stage is STARTING -- it does not mean the stage, or the
    *  overall analysis, went on to succeed. Failures in the callback are
