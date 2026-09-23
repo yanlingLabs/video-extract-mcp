@@ -103,17 +103,17 @@ describe('createSlotPool', () => {
 });
 
 describe('env readers', () => {
-  it('VIDEO_EXTRACT_MAX_CONCURRENCY: default 4, floor 1, garbage falls back to 4', () => {
+  it('VIDEO_EXTRACT_MAX_CONCURRENCY: default 2, floor 1, garbage falls back to 2', () => {
     vi.stubEnv('VIDEO_EXTRACT_MAX_CONCURRENCY', '');
-    expect(analyzeConcurrencyFromEnv()).toBe(4);
-    vi.stubEnv('VIDEO_EXTRACT_MAX_CONCURRENCY', '2');
     expect(analyzeConcurrencyFromEnv()).toBe(2);
+    vi.stubEnv('VIDEO_EXTRACT_MAX_CONCURRENCY', '3');
+    expect(analyzeConcurrencyFromEnv()).toBe(3);
     vi.stubEnv('VIDEO_EXTRACT_MAX_CONCURRENCY', '0');
     expect(analyzeConcurrencyFromEnv()).toBe(1);   // explicit but nonsensical -> floor
     vi.stubEnv('VIDEO_EXTRACT_MAX_CONCURRENCY', '-3');
     expect(analyzeConcurrencyFromEnv()).toBe(1);
     vi.stubEnv('VIDEO_EXTRACT_MAX_CONCURRENCY', 'many');
-    expect(analyzeConcurrencyFromEnv()).toBe(4);   // unparseable -> default
+    expect(analyzeConcurrencyFromEnv()).toBe(2);   // unparseable -> default
   });
 
   it('VIDEO_EXTRACT_TASK_TTL_MS: default 1800000, explicit non-positive means NO expiry, garbage falls back to default', () => {

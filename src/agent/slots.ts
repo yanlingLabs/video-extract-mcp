@@ -77,9 +77,12 @@ function intFromEnv(name: string, fallback: number): number {
   return n < 1 ? 1 : n;                       // explicit nonsense -> floor 1
 }
 
-/** VIDEO_EXTRACT_MAX_CONCURRENCY, default 4 (spec §6). */
+/** VIDEO_EXTRACT_MAX_CONCURRENCY, default 2. Spec §6 chose 4 against a
+ *  measured ~1.1 GB per analysis, which was the SenseVoice figure; with
+ *  Whisper (every non-CJK video without captions) an analysis peaks near
+ *  2 GB, so 4 meant ~8 GB worst case. 2 keeps it near 4 GB. */
 export function analyzeConcurrencyFromEnv(): number {
-  return intFromEnv('VIDEO_EXTRACT_MAX_CONCURRENCY', 4);
+  return intFromEnv('VIDEO_EXTRACT_MAX_CONCURRENCY', 2);
 }
 
 /**

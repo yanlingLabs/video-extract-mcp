@@ -44,7 +44,7 @@ Two problems, really. Getting the video at all — every platform hides its medi
 
 - **Fetching, from almost anywhere.** One resolver chain covers the big platforms, direct media URLs, and generic sites, with ranged fetches where the platform allows them and cookie support for anything that needs a login. Downloading is a complete use of this tool, not a step on the way to something else.
 
-- **Transcript, honestly sourced.** The platform's own captions are used whenever the video has any — human-written first, otherwise the platform's automatic ones. Audio is transcribed locally (Whisper or SenseVoice) only for videos with no captions at all. The result tells you which you got, via `transcript.source`.
+- **Transcript, honestly sourced.** The platform's own captions are used whenever the video has any — human-written first, otherwise the platform's automatic ones. Audio is transcribed locally (Whisper or SenseVoice) only when the video has no captions, or when the captions it has could not be retrieved. The result tells you which you got via `transcript.source`, and for a local transcript `transcript.asrReason` says why (`no_captions` or `captions_failed`; a failed retrieval is also listed in `warnings`).
 - **Keyframes chosen, not sampled.** Scene-boundary detection, blur/quality filtering, on-screen-text novelty (subtitle-aware, so burned-in captions don't preserve redundant frames), and image-embedding similarity feed an iterative diversity-aware selector.
 - **Output goes to disk, not into your context.** The tool reply is a compact summary plus file paths. A 35-frame manifest and a full transcript don't belong in a conversation where the agent needs three numbers from them.
 - **Everything runs on your machine.** No third-party API, no upload, no key. Long analyses can run as MCP background tasks — the tool returns a handle immediately and pushes progress; see Background tasks below.
@@ -151,7 +151,7 @@ npm run preflight            # verifies ffmpeg / ffprobe / yt-dlp / tesseract
 | `VIDEO_EXTRACT_COOKIES_FILE` | Path to a Netscape-format cookie jar, used for **every** yt-dlp source at once — YouTube, Instagram, Facebook, X, TikTok, Twitch and the rest. See [Authenticated sources](#authenticated-sources). |
 | `VIDEO_EXTRACT_COOKIES_FROM_BROWSER` | Load cookies from a local browser instead: `chrome`, `firefox`, `safari`, `edge`, `brave`, `chromium`, `opera`, `vivaldi`, `whale`, optionally `browser:profile`. Ignored when `VIDEO_EXTRACT_COOKIES_FILE` is set. |
 | `VIDEO_EXTRACT_WECHAT_COOKIE` | A yuanbao session cookie, required only for WeChat Channels links. Separate from the above by design — a different protocol with its own credential. |
-| `VIDEO_EXTRACT_MAX_CONCURRENCY` | Caps concurrent `analyze_video` item executions — plain calls and background tasks, batch items and separate calls, all count against the same limit. Default `4`. `resolve_video` is exempt: it loads no models, so there is nothing to throttle. |
+| `VIDEO_EXTRACT_MAX_CONCURRENCY` | Caps concurrent `analyze_video` item executions — plain calls and background tasks, batch items and separate calls, all count against the same limit. Default `2` (each analysis can take ~2 GB; see Memory below). `resolve_video` is exempt: it loads no models, so there is nothing to throttle. |
 | `VIDEO_EXTRACT_TASK_TTL_MS` | How long a completed background-task handle stays queryable before it expires. Default `1800000` (30 minutes). `0` (or any non-positive value) means the handle never expires. Governs the in-memory handle only — files already written to `destinationPath` are never deleted by the tool, expired handle or not. |
 | `VIDEO_EXTRACT_STATUS_PORT` | Pins the port of the localhost `/status` endpoint (see [Watching progress](#watching-progress)). Unset picks an ephemeral port each start (default: endpoint on). The literal value `0` disables the endpoint entirely — note the contrast with `VIDEO_EXTRACT_TASK_TTL_MS` above, where `0` means *no expiry*, not disabled. |
 
@@ -275,7 +275,7 @@ resolve_video({
   destinationPath: "./out",
   videos: [{ url: "https://youtube.com/watch?v=..." }],
 })
-// -> ./out/metadata.json
+// -> ./out/metadata.json (+ the caption file it points at, e.g. auto.en-orig.vtt, when the video has captions)
 ```
 
 Several videos in one call — each gets its own subdirectory, `video-1/`, `video-2/`, ... in array order:
@@ -389,7 +389,7 @@ https://youtu.be/AbC123xyz  resolving → downloading → transcribing  (45s in 
 https://youtu.be/DeF456uvw  resolving → downloading → transcribing → frames  (done 2m ago)
 https://tiktok.com/@u/video/789  resolving → downloading  (372s in stage) · yt-dlp pid 4210 · cpu 12.4s · workdir 412 MB
 https://youtu.be/JkL012rst  queued
-server pid 4098 · up 14m · cap 4 · running 2 · queued 1
+server pid 4098 · up 14m · cap 2 · running 2 · queued 1
 ```
 
 Every field is exactly what it says: raw stage names in the order they fired, raw elapsed time, the child process actually doing the work and its cumulative CPU, and — for an item still in progress only — the working directory's byte count so far; a completed item's directory is done changing, so its own line carries no `workdir` clause. `--watch` re-renders in place every second until you press Ctrl-C; `--json` prints the same, merged across every live server, as plain JSON with no ANSI control bytes, for scripting rather than reading; any positional argument filters the output to just that URL (repeatable). With no live servers, the human-readable render prints `no live video-extract servers`; `--json` prints `[]` instead — either way it exits 0.
@@ -436,7 +436,7 @@ WeChat Channels (视频号) support is worth calling out: it resolves **headless
 
 ## Design constraints worth knowing
 
-**Memory is a per-concurrency rate, not a flat ceiling.** Speech recognition and vision embedding are both heavy models, so within one analysis they never coexist: each runs in its own worker process that exits before the next starts. ~1.1 GB peak per concurrent analysis; total footprint ≈ concurrency × 1.1 GB. Default cap 4 ⇒ plan for ~4.5 GB worst case. `VIDEO_EXTRACT_MAX_CONCURRENCY=1` restores the old flat under-2GB behavior.
+**Memory is a per-concurrency rate, not a flat ceiling.** Speech recognition and vision embedding are both heavy models, so within one analysis they never coexist: each runs in its own worker process that exits before the next starts. The peak depends on which speech model runs. Measured per analysis: **~2.0 GB** when Whisper transcribes (any non-CJK video without usable captions: the Whisper worker alone reaches ~1.9 GB, creeping to ~2.1 GB over 26 minutes of speech), **~1.1 GB** with SenseVoice (Chinese, Japanese, Korean, Cantonese), and under 1 GB when captions supply the transcript (the image-embedding stage is then the heaviest, ~0.8 GB). Total footprint ≈ concurrency × that. Default cap 2 ⇒ plan for ~4 GB worst case. `VIDEO_EXTRACT_MAX_CONCURRENCY=1` keeps it to a single analysis, ~2 GB; raising it to 4 means ~8 GB.
 
 **Single Node runtime.** No Python sidecar, no subprocess to a second language runtime. Speech recognition is `sherpa-onnx-node`; vision embeddings are `@huggingface/transformers`.
 
@@ -478,7 +478,7 @@ House rules, briefly:
 - Tests are expected to *fail against broken code*. This project's most common review finding has been a test that passes either way — if you add a test, mutate the thing it guards and confirm it goes red.
 - No Python. Single Node runtime.
 - `src/types.ts` is the single source of truth for shared types.
-- Keep the per-analysis staging invariant intact: within one video's pipeline, heavy stages (speech recognition, vision embedding) run sequentially, never concurrently — that discipline is what keeps the per-concurrent-analysis rate at ~1.1 GB. Across different videos, up to `VIDEO_EXTRACT_MAX_CONCURRENCY` analyses run at once by design.
+- Keep the per-analysis staging invariant intact: within one video's pipeline, heavy stages (speech recognition, vision embedding) run sequentially, never concurrently — that discipline is what keeps the per-concurrent-analysis rate at ~2 GB (Whisper) or ~1.1 GB (SenseVoice) instead of their sum. Across different videos, up to `VIDEO_EXTRACT_MAX_CONCURRENCY` analyses run at once by design.
 
 ```bash
 npm test          # full suite
