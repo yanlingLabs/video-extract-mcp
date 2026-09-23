@@ -51,12 +51,27 @@ Two problems, really. Getting the video at all — every platform hides its medi
 
 ## Quick start
 
-Install the system binaries first — these can't come from npm:
+Install the system programs first; they can't come from npm. You need `ffmpeg` (with `ffprobe`), `yt-dlp`, Deno (yt-dlp needs it for YouTube), `tesseract` with Chinese language data, and Node ≥ 22.12.
+
+**macOS** (the tested platform):
 
 ```bash
-# macOS; use your package manager elsewhere
-brew install ffmpeg yt-dlp tesseract tesseract-lang
+brew install node ffmpeg yt-dlp tesseract tesseract-lang    # Homebrew's yt-dlp brings Deno along
 ```
+
+**Windows** (not yet run there; these come from the package manifests), in PowerShell:
+
+```powershell
+winget install OpenJS.NodeJS.LTS
+winget install yt-dlp.yt-dlp            # also installs Deno and an ffmpeg build with ffprobe
+winget install tesseract-ocr.tesseract
+```
+
+Then open a new terminal. Tesseract's installer doesn't add itself to `PATH`, and winget doesn't add Chinese language data; [INSTALL.md](INSTALL.md#windows) has both steps.
+
+**Linux:** your distribution's `yt-dlp` is usually too old for YouTube, and Deno isn't packaged. [INSTALL.md](INSTALL.md#linux) has the Debian/Ubuntu and Fedora steps.
+
+Restart your agent after installing, so the server it launches sees the new programs.
 
 Then point your MCP client at the package. There are two ways, and they differ in ways worth thirty seconds of your time.
 
@@ -74,7 +89,7 @@ Codex:
 codex mcp add video-extract -- npx -y @yanlinglabs/video-extract-mcp@latest
 ```
 
-**Another agent?** Point it at **[SKILL.md](https://github.com/yanlingLabs/video-extract-mcp/blob/main/SKILL.md)** and it can install itself.
+**Another agent?** Point it at **[INSTALL.md](https://github.com/yanlingLabs/video-extract-mcp/blob/main/INSTALL.md)** and it can install itself. It covers Gemini CLI, Grok, opencode, Hermes Agent, OpenClaw, Pi, Kilo Code, Cline and DeepSeek Harness, says how each recipe was checked, and lists the tool-call timeout to raise in each: a full analysis takes minutes, and several stop waiting after one.
 
 **Keep the `@latest`** — without it npx pins to the first version it cached and never updates.
 
@@ -125,7 +140,7 @@ That is enough for any video that has captions — which, thanks to the caption-
 **Speech models are only needed for videos with no captions at all**, and they are fetched automatically the first time one is. Only the engine that video needs is downloaded — 233 MB for the Chinese/Japanese/Korean model, 1.3 GB for Whisper — into `~/.cache/video-extract-mcp/models`. Set `VIDEO_EXTRACT_AUTO_FETCH_MODELS=0` to keep it manual, or pre-fetch them yourself:
 
 ```bash
-npx -y @yanlinglabs/video-extract-mcp --help   # installs the package
+npx -y -p @yanlinglabs/video-extract-mcp@latest video-extract cookies   # installs the package, then exits
 curl -fsSL https://raw.githubusercontent.com/yanlingLabs/video-extract-mcp/main/scripts/fetch-models.sh \
   | bash -s -- ~/.cache/video-extract-mcp/models
 ```
@@ -521,7 +536,7 @@ npm run matrix    # acceptance matrix (honest about skips)
 | | |
 |---|---|
 | Node | ≥ 22.12 |
-| System binaries | `ffmpeg`, `ffprobe`, `yt-dlp`, `tesseract` (with `chi_sim` for Chinese OCR) |
+| System binaries | `ffmpeg`, `ffprobe`, `yt-dlp`, Deno (yt-dlp's JavaScript runtime for YouTube), `tesseract` (with `chi_sim` for Chinese OCR). Per-OS steps: [INSTALL.md](INSTALL.md) |
 | Models | ~1.5 GB, fetched by `scripts/fetch-models.sh` — Silero VAD, Whisper small, SenseVoice |
 | Platform | Developed on macOS/arm64; see [Platform support](#platform-support) |
 

@@ -12,7 +12,7 @@
     "scripts/fetch-models.sh",
     "SECURITY.md",
     "CONTRIBUTING.md",
-    "SKILL.md"
+    "INSTALL.md"
   ],
   "type": "module",
   "engines": {

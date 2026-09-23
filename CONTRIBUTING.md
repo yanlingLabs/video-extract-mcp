@@ -4,24 +4,24 @@ Contributions are genuinely welcome. This file is the practical version; `CLAUDE
 
 ## The most valuable thing you can do
 
-**Run the acceptance matrix against real URLs.**
+**Run the acceptance matrix against real URLs, on a machine other than an Apple Silicon Mac.**
 
-`docs/acceptance-matrix.md` honestly reports **0 of 11 rows executed**. The platform list — YouTube, TikTok, Facebook, WeChat and the rest — is a list of *tested code paths*, not platforms anyone has watched succeed on live media. That gap is this project's single biggest unknown.
+`docs/acceptance-matrix.md` was run against real URLs on Apple Silicon macOS: all 10 executed rows pass, and the DRM row has not been run. Intel Macs, Linux beyond CI's test suite, and Windows have never run it, so on those platforms the whole platform list is still tested code paths only. That gap is this project's single biggest unknown.
 
 ```bash
 M_YT_MANUAL="https://..." M_TIKTOK="https://..." npm run matrix
 ```
 
-Run it with whatever URLs you have, and open an issue with what you saw — including the failures, especially the failures. That converts the biggest unknown into fact, and it needs no knowledge of the internals.
+Run it with whatever URLs you have, and open an issue with what you saw — including the failures, especially the failures. That converts the biggest unknown into fact, and it needs no knowledge of the internals. Installing on a new platform or agent and reporting which steps in [INSTALL.md](INSTALL.md) worked is just as useful.
 
 Second most valuable: `docs/follow-ups.md` records every deliberately deferred item **with the reasoning that deferred it**. These are not vague "good first issue" labels — each one says what was tried and why it was left. Check it before reporting something as a gap; it may already be there with context.
 
 ## Setup
 
-Requires **Node >= 22.12** and four system binaries that cannot come from npm:
+Requires **Node >= 22.12**, four system binaries that cannot come from npm, and Deno, which yt-dlp needs for YouTube (Homebrew's yt-dlp installs it for you):
 
 ```bash
-brew install ffmpeg yt-dlp tesseract tesseract-lang   # macOS; use your package manager elsewhere
+brew install ffmpeg yt-dlp tesseract tesseract-lang   # macOS; Windows and Linux: see INSTALL.md
 
 git clone https://github.com/yanlingLabs/video-extract-mcp.git
 cd video-extract-mcp
@@ -100,7 +100,7 @@ src/{resolve,media,transcript,vision}/   subsystems
 
 `CLAUDE.md` documents these in full. The ones that most often catch people:
 
-- **Heavy stages never overlap within one analysis.** Speech recognition and vision embedding each run in their own worker process that exits before the next starts. That is the entire memory strategy. Across *different* videos, up to `VIDEO_EXTRACT_MAX_CONCURRENCY` analyses run at once by design — memory is a per-concurrent-analysis rate (~1.1 GB), not a flat ceiling.
+- **Heavy stages never overlap within one analysis.** Speech recognition and vision embedding each run in their own worker process that exits before the next starts. That is the entire memory strategy. Across *different* videos, up to `VIDEO_EXTRACT_MAX_CONCURRENCY` analyses run at once by design — memory is a per-concurrent-analysis rate (~2 GB with Whisper, ~1.1 GB with SenseVoice), not a flat ceiling.
 - **Degradation must stay visible.** An optional stage that fails and is skipped records a `processing.warnings` entry, so an empty transcript is distinguishable from a video with no speech. A stage skipped *by design* is not a degradation and must not fabricate a warning.
 - **Cancellation is honest, never pretend.** Once any item starts executing, the task refuses cancellation rather than reporting `cancelled` while the work quietly finishes. Do not "fix" that refusal.
 - **Status payloads carry observables, never verdicts.** No `stale`, `stuck`, `healthy`, or invented percentage — the reader judges slow-vs-stuck by polling twice and diffing. Tests grep for verdict words.
