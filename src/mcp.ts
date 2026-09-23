@@ -10,6 +10,7 @@ import { resolveVideoTool, type ResolveToolArgs } from './agent/resolveTool.js';
 import { createSlotPool, analyzeConcurrencyFromEnv, taskTtlMsFromEnv, type SlotPool } from './agent/slots.js';
 import { createStatusRegistry, type StatusRegistry } from './status/registry.js';
 import { createResultStore, type ResultStore } from './agent/resultStore.js';
+import { sweepLegacyResolveTempDirs } from './agent/workdir.js';
 import { startStatusEndpoint, statusPortFromEnv } from './status/endpoint.js';
 import { registerServer, unregisterServer } from './status/discovery.js';
 import { isMainModule } from './util/entry.js';
@@ -97,7 +98,9 @@ const ANALYZE_DESCRIPTION =
   + 'Check every item\'s status. "rate_limited" is temporary: wait, retry, and space out '
   + 'repeats for the same video. If a failure carries suggestedCommand, ASK THE USER before '
   + 'running it -- it gives this server access to their browser session. Read warnings, and '
-  + 'transcript.source, to tell a failed stage from a video that simply has no speech. Pass '
+  + 'transcript.source, to tell a failed stage from a video that simply has no speech; when '
+  + 'source is "asr", transcript.asrReason says whether the video had no captions '
+  + '("no_captions") or had captions that could not be retrieved ("captions_failed"). Pass '
   + 'videoPath back in to inspect another moment without downloading again. '
   + STATUS_NOTE + ' ' + PLATFORMS;
 
@@ -859,6 +862,13 @@ export function buildServer(opts?: { analyzeSlots?: SlotPool; statusPort?: numbe
 async function main(): Promise<void> {
   const server = buildServer();
   await server.connect(new StdioServerTransport());
+  // Clean-up of what resolve_video left in os.tmpdir() before 0.14.0. Here,
+  // not in buildServer(), so only a real server process does it; stopped
+  // the moment stdin closes so it can never hold up exit.
+  const stop = new AbortController();
+  process.stdin.once('close', () => stop.abort());
+  process.stdin.once('end', () => stop.abort());
+  void sweepLegacyResolveTempDirs({ signal: stop.signal });
 }
 
 // isMainModule (src/util/entry.ts) realpaths both sides, covering the two

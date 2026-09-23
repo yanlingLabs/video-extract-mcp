@@ -154,84 +154,81 @@ describe('analyzeVideoTool', () => {
     expect(readdirSync(dir).filter((f) => f.endsWith('.mp4'))).toEqual([]);
   });
 
-  it("keeps analyzeVideo's own working directory out of destinationPath for a local source (spec §2.1)", async () => {
-    // analyzeVideo's normalize() step (src/media/ffmpeg.ts) unconditionally
-    // writes a re-encoded working copy into whatever outDir it receives
-    // (src/analyze.ts passes opts.outDir straight through as workDir).
-    // Passing destinationPath as outDir for an already-local source would
-    // put that re-encoded copy directly in the deliverable directory --
-    // exactly the duplication spec §2.1 forbids -- even though the tool
-    // itself never calls copyFileSync. Because analyzeVideo is mocked here
-    // and never really runs normalize(), readdirSync(dir) alone cannot
-    // observe this; only the options passed to analyzeVideo can prove the
-    // fix is in place.
+  it("works in a scratch directory for a local source too, and leaves nothing of it behind", async () => {
+    // analyzeVideo writes everything (candidate frames, the 'key'-mode
+    // re-encode) into the outDir it is given. A local source used to get no
+    // outDir at all, so analyzeVideo minted its own os.tmpdir() directory
+    // that nothing ever removed -- 410 of them on the machine that found it.
+    // It now gets the same private .work-* scratch a URL gets, which the
+    // call deletes on the way out.
     const src = mkdtempSync(join(tmpdir(), 'norma-src-'));
     const local = join(src, 'clip.mp4');
     writeFileSync(local, 'not-real-video');
-    analyzeMock.mockResolvedValue(manifest({
-      source: { url: local, platform: 'local', title: 'T', duration: 10, resolvedBy: 'direct', status: 'ok', filePath: local },
-    }));
+    let outDir = '';
+    analyzeMock.mockImplementation(async (_u: string, opts: { outDir: string }) => {
+      outDir = opts.outDir;
+      writeFileSync(join(outDir, 'cand_0001.jpg'), 'a-rejected-candidate');
+      return manifest({
+        source: { url: local, platform: 'local', title: 'T', duration: 10, resolvedBy: 'direct', status: 'ok', filePath: local },
+        frames: [],
+      });
+    });
     const dir = mkdtempSync(join(tmpdir(), 'norma-at-'));
     await analyzeVideoTool({ destinationPath: dir, videos: [{ pathOrUrl: local }] });
-    const opts = analyzeMock.mock.calls[0]![1] as Record<string, unknown>;
-    expect(opts.outDir).not.toBe(dir);
+    expect(outDir.startsWith(join(dir, '.work-'))).toBe(true);
+    expect(existsSync(outDir)).toBe(false);
+    expect(readdirSync(dir).sort()).toEqual(['manifest.json', 'transcript.json']);
   });
 
-  it('relocates frame thumbnails into destinationPath for a local source, without duplicating the video (spec §2.1)', async () => {
+  it('delivers frame thumbnails into destinationPath for a local source, without duplicating the video (spec §2.1)', async () => {
     // Frames are new artifacts analyzeVideo just generated (not a copy of
     // the source), so they belong in destinationPath regardless of where
     // the source came from -- the "not a duplicate of the video" rule
-    // applies only to the video itself. Since outDir is deliberately kept
-    // away from destinationPath for a local source (previous test), frames
-    // land in analyzeVideo's own private working directory unless this
-    // handler relocates them itself.
+    // applies only to the video itself.
     const src = mkdtempSync(join(tmpdir(), 'norma-src-'));
     const local = join(src, 'clip.mp4');
     writeFileSync(local, 'not-real-video');
-    const workDir = mkdtempSync(join(tmpdir(), 'norma-work-'));
-    const framePath = join(workDir, 'f1.jpg');
-    writeFileSync(framePath, 'not-real-jpeg');
-    analyzeMock.mockResolvedValue(manifest({
-      source: { url: local, platform: 'local', title: 'T', duration: 10, resolvedBy: 'direct', status: 'ok', filePath: local },
-      frames: [{ timestamp: 1, sceneId: 0, image: framePath, importance: 0.5, reasons: [], ocrContent: null, transcriptWindow: null, nearestSelectedSimilarity: 0 }],
-    }));
+    let framePath = '';
+    analyzeMock.mockImplementation(async (_u: string, opts: { outDir: string }) => {
+      framePath = join(opts.outDir, 'f1.jpg');
+      writeFileSync(framePath, 'not-real-jpeg');
+      return manifest({
+        source: { url: local, platform: 'local', title: 'T', duration: 10, resolvedBy: 'direct', status: 'ok', filePath: local },
+        frames: [{ timestamp: 1, sceneId: 0, image: framePath, importance: 0.5, reasons: [], ocrContent: null, transcriptWindow: null, nearestSelectedSimilarity: 0 }],
+      });
+    });
     const dir = mkdtempSync(join(tmpdir(), 'norma-at-'));
     const r = await analyzeVideoTool({ destinationPath: dir, videos: [{ pathOrUrl: local }] });
     const expectedFrame = join(dir, 'f1.jpg');
     expect(r.videos[0]!.framePaths).toEqual([expectedFrame]);
-    expect(existsSync(expectedFrame)).toBe(true);
+    expect(readFileSync(expectedFrame, 'utf8')).toBe('not-real-jpeg');
     expect(existsSync(framePath)).toBe(false);
     const saved = JSON.parse(readFileSync(r.videos[0]!.manifestPath, 'utf8'));
     expect(saved.frames[0].image).toBe(expectedFrame);
+    expect(readdirSync(dir).filter((f) => f.endsWith('.mp4'))).toEqual([]);
   });
 
-  it('cleans up analyzeVideo\'s orphaned working copy for a local source, without ever touching the caller\'s own file (Fix 6, deferred #18 leak half)', async () => {
+  it('discards analyzeVideo\'s re-encode of a local source, and never touches the caller\'s own file (Fix 6, deferred #18 leak half)', async () => {
     // frameMode 'key' means analyzeVideo's own manifest.source.filePath
-    // points at its private, ephemeral re-encoded copy (work.mp4) -- a REAL
-    // file here, standing in for what normalizeVideo() actually produces.
-    // The rewrite above replaces source.filePath with args.pathOrUrl
-    // (`local`), so nothing in the final reply/manifest references the
-    // ephemeral copy any more once this call returns -- exactly the leak
-    // deferred #18 describes ("every local analyze_video call leaves a full
-    // re-encode... behind"). local !== ephemeralCopy is the load-bearing
-    // part of this fixture: an implementation that deleted based on `local`
-    // alone (not on whether the path actually changed) would ALSO destroy
-    // the caller's own file whenever frameMode wasn't 'key' and filePath
-    // already equalled pathOrUrl -- see the companion test below.
+    // points at its private re-encoded copy (work.mp4). The reply points at
+    // the caller's file instead, so the copy is garbage -- and it lives in
+    // the scratch directory, which goes with it.
     const src = mkdtempSync(join(tmpdir(), 'norma-src-'));
     const local = join(src, 'clip.mp4');
     writeFileSync(local, 'the-callers-own-video-bytes');
-    const workDir = mkdtempSync(join(tmpdir(), 'norma-work-'));
-    const ephemeralCopy = join(workDir, 'work.mp4');
-    writeFileSync(ephemeralCopy, 'analyzeVideos-own-reencoded-copy');
-    analyzeMock.mockResolvedValue(manifest({
-      source: { url: local, platform: 'local', title: 'T', duration: 10, resolvedBy: 'direct', status: 'ok', filePath: ephemeralCopy },
-    }));
+    let ephemeralCopy = '';
+    analyzeMock.mockImplementation(async (_u: string, opts: { outDir: string }) => {
+      ephemeralCopy = join(opts.outDir, 'work.mp4');
+      writeFileSync(ephemeralCopy, 'analyzeVideos-own-reencoded-copy');
+      return manifest({
+        source: { url: local, platform: 'local', title: 'T', duration: 10, resolvedBy: 'direct', status: 'ok', filePath: ephemeralCopy },
+      });
+    });
     const dir = mkdtempSync(join(tmpdir(), 'norma-at-'));
     const r = await analyzeVideoTool({ destinationPath: dir, videos: [{ pathOrUrl: local }] });
     expect(r.videos[0]!.status).toBe('ok');
     expect(r.videos[0]!.videoPath).toBe(local);
-    expect(existsSync(local)).toBe(true);
+    expect(readFileSync(local, 'utf8')).toBe('the-callers-own-video-bytes');
     expect(existsSync(ephemeralCopy)).toBe(false);
   });
 

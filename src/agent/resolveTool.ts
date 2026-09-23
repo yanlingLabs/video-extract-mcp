@@ -1,12 +1,12 @@
-import { mkdirSync, mkdtempSync, renameSync, copyFileSync, existsSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, renameSync, copyFileSync, existsSync } from 'node:fs';
 import { join, relative, isAbsolute, resolve as resolvePath } from 'node:path';
-import type { Chapter } from '../types.js';
+import type { Captions, CaptionTrack, Chapter } from '../types.js';
 import { resolve } from '../resolve/index.js';
 import { trim } from '../media/ffmpeg.js';
 import { descriptionPreview, mediaFileName, writeMetadata } from './artifacts.js';
 import { itemDir } from './analyzeTool.js';
 import { runWithStatus } from '../status/context.js';
+import { sweepAbandonedWorkDirs, mintWorkDir, discardWorkDir, deliverFile } from './workdir.js';
 
 /**
  * True when `filePath` is located inside `dir`. Fix 1 (data loss): renaming
@@ -55,10 +55,23 @@ export interface ResolveVideoItem {
 }
 
 async function resolveOneVideoAttempt(item: ResolveVideoItem, destinationPath: string): Promise<ResolveItemResult> {
-  const returnVideo = item.returnVideo ?? false;
   mkdirSync(destinationPath, { recursive: true });
+  // Private scratch inside destinationPath, discarded on every exit -- the
+  // same arrangement analyze_video uses (src/agent/workdir.ts has the
+  // reasons). This used to be an os.tmpdir() directory nothing ever removed:
+  // every call left one behind, and metadata.json's caption paths pointed
+  // into it, outside the directory the caller asked for.
+  sweepAbandonedWorkDirs(destinationPath);
+  const workDir = mintWorkDir(destinationPath);
+  try {
+    return await resolveInto(item, destinationPath, workDir);
+  } finally {
+    discardWorkDir(workDir);
+  }
+}
 
-  const workDir = mkdtempSync(join(tmpdir(), 'norma-res-'));
+async function resolveInto(item: ResolveVideoItem, destinationPath: string, workDir: string): Promise<ResolveItemResult> {
+  const returnVideo = item.returnVideo ?? false;
   const r = await resolve(item.url, {
     workDir,
     returnVideo,
@@ -109,12 +122,20 @@ async function resolveOneVideoAttempt(item: ResolveVideoItem, destinationPath: s
     appliedEnd = item.end;
   }
 
+  // The caption files are delivered next to metadata.json, which points at
+  // them there; the scratch directory they were written into is discarded.
+  const deliverTrack = (t: CaptionTrack | null): CaptionTrack | null =>
+    t ? { ...t, path: deliverFile(destinationPath, workDir, t.path) } : null;
+  const captions: Captions = {
+    ...r.captions, manual: deliverTrack(r.captions.manual), auto: deliverTrack(r.captions.auto),
+  };
+
   // Spec §5.1: the saved metadata must record the applied range, whether the
   // resolver applied it or the local trim above just did.
   const metadataPath = writeMetadata(destinationPath, {
     url: item.url, platform: r.platform, resolvedBy: r.resolvedBy,
     clipStart: appliedStart, clipEnd: appliedEnd,
-    captions: r.captions, languageHint: r.languageHint,
+    captions, languageHint: r.languageHint,
     ...(r.metadata ?? {}),
   });
 

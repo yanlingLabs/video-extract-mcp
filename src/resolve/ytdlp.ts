@@ -1,6 +1,6 @@
 import { readdirSync, existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { VideoResolver, ResolveOptions, ResolveResult, ResolveFailure, CaptionTrack, VideoMetadata } from '../types.js';
+import type { VideoResolver, ResolveOptions, ResolveResult, ResolveFailure, CaptionTrack, Captions, VideoMetadata } from '../types.js';
 import { run } from '../util/run.js';
 import { sweepStalePartials } from '../util/partials.js';
 import {
@@ -115,8 +115,25 @@ export function classifyYtDlpError(stderr: string): ResolveFailure {
 // it keeps `requested_subtitles` provably manual-only). Automatic captions
 // are never bulk-downloaded; instead, when no manual track exists, ONE auto
 // track is chosen deliberately from the `automatic_captions` metadata and
-// fetched directly (bounded), so `captions.auto` is honest and accurate mode
-// keeps its spec §9 accuracy bias (auto is only ever *used* in fast mode).
+// fetched directly, so `captions.auto` is honest about what it is. Whichever
+// track exists is then used ahead of local speech recognition
+// (chooseCaptionTier, src/transcript/captions.ts).
+//
+// A caption track the platform offers must never be lost quietly:
+//  - The auto track is fetched the moment `--print-json` prints the info
+//    dict, which is BEFORE the media download starts (measured: 1.3s into a
+//    run whose download then took 92s). Fetching after the download instead
+//    lost a real Portuguese track to throttling on a run whose metadata-only
+//    twin fetched the same track in 194ms.
+//  - Throttling, server errors and timeouts are retried with backoff, and a
+//    body that is not a caption file counts as a failure, not a track.
+//  - yt-dlp aborts the WHOLE run when a manual subtitle download fails
+//    (YoutubeDL._write_subtitles raises DownloadError). That run is repeated
+//    without subtitles and the manual track fetched directly, so a throttled
+//    caption can no longer fail an analysis that speech recognition can
+//    still complete.
+//  - Whatever still fails is recorded in `captions.retrievalErrors`, which is
+//    what lets analyze.ts say "captions failed" rather than "no captions".
 // ---------------------------------------------------------------------------
 
 interface SubtitleFormat { ext?: string; url?: string; data?: string; name?: string }
@@ -217,14 +234,15 @@ export function pickManualCaption(
   return best !== undefined ? { path: onDisk.get(best)!, language: baseLang(best) } : null;
 }
 
-/** Chooses which automatic track (language + format) is worth fetching. */
-export function pickAutoTrack(
-  meta: YtDlpMeta, preferredLanguage?: string,
-): { lang: string; format: SubtitleFormat } | null {
-  const auto = meta.automatic_captions ?? {};
-  const langs = Object.keys(auto).filter((l) => l !== 'live_chat');
+export interface TrackChoice { lang: string; format: SubtitleFormat }
+
+function pickTrack(
+  pool: Record<string, SubtitleFormat[]> | undefined, meta: YtDlpMeta, preferredLanguage?: string,
+): TrackChoice | null {
+  const tracks = pool ?? {};
+  const langs = Object.keys(tracks).filter((l) => l !== 'live_chat');
   for (const lang of orderByLanguagePreference(langs, preferredLanguage, meta.language)) {
-    const formats = auto[lang] ?? [];
+    const formats = tracks[lang] ?? [];
     const format = formats.find((f) => f.ext === 'vtt' && (f.url || f.data))
       ?? formats.find((f) => f.ext === 'srt' && (f.url || f.data));
     if (format) return { lang, format };
@@ -232,31 +250,130 @@ export function pickAutoTrack(
   return null;
 }
 
+/** Chooses which automatic track (language + format) is worth fetching. */
+export function pickAutoTrack(meta: YtDlpMeta, preferredLanguage?: string): TrackChoice | null {
+  return pickTrack(meta.automatic_captions, meta, preferredLanguage);
+}
+
+/** The manual track to fetch directly when yt-dlp itself failed to write it. */
+export function pickManualTrack(meta: YtDlpMeta, preferredLanguage?: string): TrackChoice | null {
+  return pickTrack(meta.subtitles, meta, preferredLanguage);
+}
+
+export type CaptionFetch = { track: CaptionTrack } | { error: string };
+
+const CAPTION_RETRY_DELAYS_MS = [2_000, 5_000];
+const MAX_RETRY_AFTER_MS = 15_000;
+
+/** Every cue in both VTT and SRT carries a `-->` timing line; an HTML error
+ *  page, a consent wall or an empty body does not. */
+const looksLikeCaptions = (body: string): boolean => body.includes('-->');
+
+function delay(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) { resolve(); return; }
+    const t = setTimeout(resolve, ms);
+    signal?.addEventListener('abort', () => { clearTimeout(t); resolve(); }, { once: true });
+  });
+}
+
 /**
- * Materializes the chosen automatic track: inline `data` is written as-is;
- * otherwise its URL is fetched with the extractor's own http_headers and a
- * bounded timeout. Best-effort -- any failure degrades to "no auto captions"
- * (ASR still runs), never to a resolver failure.
+ * Materializes one chosen track: inline `data` is written as-is; otherwise
+ * its URL is fetched with the extractor's own http_headers. Throttling (429),
+ * server errors and network failures/timeouts are retried with backoff --
+ * honouring a short Retry-After -- because they are exactly the transient
+ * failures that used to cost a video its captions. Never throws: a failure
+ * comes back as a human-readable `error` naming the track and the cause, so
+ * the caller can report it instead of mistaking it for "no captions".
  */
-async function downloadAutoTrack(
-  track: { lang: string; format: SubtitleFormat }, headers: Record<string, string> | undefined, workDir: string,
-): Promise<CaptionTrack | null> {
-  const out = join(workDir, `auto.${track.lang}.${track.format.ext ?? 'vtt'}`);
-  try {
-    let body = track.format.data;
-    if (body === undefined && track.format.url) {
-      const res = await fetch(track.format.url, {
-        headers, signal: AbortSignal.timeout(CAPTION_FETCH_TIMEOUT_MS),
-      });
-      if (!res.ok) return null;
-      body = await res.text();
+export async function fetchCaptionTrack(
+  choice: TrackChoice, headers: Record<string, string> | undefined, workDir: string,
+  kind: 'manual' | 'automatic', signal?: AbortSignal,
+): Promise<CaptionFetch> {
+  const what = `${kind} captions (${choice.lang})`;
+  const out = join(workDir, `${kind === 'manual' ? 'manual' : 'auto'}.${choice.lang}.${choice.format.ext ?? 'vtt'}`);
+  const save = (body: string): CaptionFetch => {
+    if (!looksLikeCaptions(body)) return { error: `${what} could not be retrieved: the response was not a caption file` };
+    try {
+      writeFileSync(out, body);
+    } catch (e) {
+      return { error: `${what} could not be saved: ${e instanceof Error ? e.message : String(e)}` };
     }
-    if (body === undefined) return null;
-    writeFileSync(out, body);
-    return { path: out, language: baseLang(track.lang) };
-  } catch {
-    return null;
+    return { track: { path: out, language: baseLang(choice.lang) } };
+  };
+  if (choice.format.data !== undefined) return save(choice.format.data);
+  const url = choice.format.url;
+  if (!url) return { error: `${what} could not be retrieved: the platform gave no address for it` };
+
+  const attempts = CAPTION_RETRY_DELAYS_MS.length + 1;
+  let last = '';
+  let made = 0;
+  for (let i = 0; i < attempts; i++) {
+    if (signal?.aborted) return { error: `${what} could not be retrieved: cancelled` };
+    made++;
+    let wait = CAPTION_RETRY_DELAYS_MS[i] ?? 0;
+    try {
+      const timeout = AbortSignal.timeout(CAPTION_FETCH_TIMEOUT_MS);
+      const res = await fetch(url, { headers, signal: signal ? AbortSignal.any([signal, timeout]) : timeout });
+      if (res.ok) return save(await res.text());
+      last = `HTTP ${res.status}`;
+      if (res.status !== 429 && res.status < 500) break; // a 403/404 will not change on retry
+      const retryAfter = res.headers.has('retry-after') ? Number(res.headers.get('retry-after')) : NaN;
+      if (Number.isFinite(retryAfter) && retryAfter >= 0) wait = Math.min(retryAfter * 1000, MAX_RETRY_AFTER_MS);
+    } catch (e) {
+      last = e instanceof Error && e.name === 'TimeoutError'
+        ? `timed out after ${CAPTION_FETCH_TIMEOUT_MS / 1000}s`
+        : e instanceof Error ? e.message : String(e);
+    }
+    if (i < attempts - 1) await delay(wait, signal);
   }
+  return { error: `${what} could not be retrieved: ${last}${made > 1 ? ` (${made} attempts)` : ''}` };
+}
+
+/**
+ * Watches yt-dlp's stdout for the info dict and starts the automatic-caption
+ * fetch the moment it appears -- before the media download begins -- unless
+ * a parseable manual track was requested, in which case auto is not needed.
+ * `result` is null when nothing was started (no JSON seen, or manual wins),
+ * and the caller falls back to fetching after the run.
+ */
+function captionPrefetcher(workDir: string, preferredLanguage?: string) {
+  const controller = new AbortController();
+  let buf = '';
+  let seen = false;
+  let result: Promise<CaptionFetch> | null = null;
+  return {
+    onStdout(chunk: string): void {
+      if (seen) return;
+      buf += chunk;
+      let nl: number;
+      while (!seen && (nl = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (!line.startsWith('{')) continue;
+        seen = true;
+        buf = '';
+        let meta: YtDlpMeta;
+        try { meta = JSON.parse(line) as YtDlpMeta; } catch { return; }
+        const manualRequested = Object.values(meta.requested_subtitles ?? {})
+          .some((info) => PARSEABLE_SUB_EXTS.has(info?.ext ?? 'vtt'));
+        if (manualRequested) return;
+        const choice = pickAutoTrack(meta, preferredLanguage);
+        if (choice) result = fetchCaptionTrack(choice, meta.http_headers, workDir, 'automatic', controller.signal);
+      }
+    },
+    get result(): Promise<CaptionFetch> | null { return result; },
+    cancel(): void { controller.abort(); },
+  };
+}
+
+/** yt-dlp's own wording when a subtitle download aborts the run. */
+const SUBTITLE_FAILURE_RE = /unable to download video subtitles for '([^']+)': ([^\n]*)/i;
+const MANUAL_SUB_ARGS = ['--write-subs', '--sub-format', 'vtt', '--sub-langs', 'all,-live_chat'];
+
+function withoutManualSubs(args: string[]): string[] {
+  const i = args.indexOf(MANUAL_SUB_ARGS[0]!);
+  return i < 0 ? args : [...args.slice(0, i), ...args.slice(i + MANUAL_SUB_ARGS.length)];
 }
 
 export class YtDlpResolver implements VideoResolver {
@@ -271,13 +388,13 @@ export class YtDlpResolver implements VideoResolver {
     const wantsDownload = opts.returnVideo !== false;
 
     const out = join(opts.workDir, 'source.%(ext)s');
-    const args = [
+    let args = [
       '--no-playlist', '--no-warnings',
       '-f', 'bv*[height<=1080]+ba/b[height<=1080]/b',
       '--merge-output-format', 'mp4',
       // Manual subs only -- deliberately NO --write-auto-subs (see the
       // caption-acquisition block comment above for the verified reasons).
-      '--write-subs', '--sub-format', 'vtt', '--sub-langs', 'all,-live_chat',
+      ...MANUAL_SUB_ARGS,
       '--print-json', '--no-simulate',
       '-o', out,
     ];
@@ -345,6 +462,17 @@ export class YtDlpResolver implements VideoResolver {
     }
     args.push(...cookies.args);
 
+    // Every run gets its own prefetcher; only the last run's is used, and
+    // all of them are cancelled on the way out (the finally below) so a
+    // fetch from a run that failed never writes into a directory the caller
+    // has already moved on from.
+    const prefetchers: Array<ReturnType<typeof captionPrefetcher>> = [];
+    const runYtDlp = (extra: string[]) => {
+      const pre = captionPrefetcher(opts.workDir, opts.preferredLanguage);
+      prefetchers.push(pre);
+      return run('yt-dlp', [...args, ...extra, url], { timeoutMs: 15 * 60_000, onStdout: (d) => pre.onStdout(d) });
+    };
+
     // try/finally, not a trailing call: every branch below returns, and a
     // temporary copy of a credential must not outlive the call that made it.
     try {
@@ -360,7 +488,18 @@ export class YtDlpResolver implements VideoResolver {
       // on success, so anything older than the age gate is orphaned bytes
       // nothing will ever finish (src/util/partials.ts).
       if (wantsDownload) sweepStalePartials(opts.workDir);
-      let r = await run('yt-dlp', [...args, url], { timeoutMs: 15 * 60_000 });
+      let r = await runYtDlp([]);
+      // yt-dlp aborts the whole run when a manual subtitle fails to download
+      // (see the caption-acquisition comment above). The media is still
+      // wanted and speech recognition can still transcribe it, so run again
+      // without subtitles and fetch that track directly further down.
+      let subtitleFailure: string | null = null;
+      const subFail = r.code !== 0 ? SUBTITLE_FAILURE_RE.exec(r.stderr) : null;
+      if (subFail) {
+        subtitleFailure = subFail[2]!.trim();
+        args = withoutManualSubs(args);
+        r = await runYtDlp([]);
+      }
       if (r.code !== 0) {
         // A refusal is the one failure cookies can plausibly fix, so it is
         // the only one worth spending them on. Everything else (DRM, removed
@@ -382,7 +521,7 @@ export class YtDlpResolver implements VideoResolver {
           // ONE retry, never a loop: if borrowed cookies do not clear it, the
           // refusal is about rate rather than identity and hammering it is
           // exactly what provoked the limiter in the first place.
-          r = await run('yt-dlp', [...args, '--cookies-from-browser', browser, url], { timeoutMs: 15 * 60_000 });
+          r = await runYtDlp(['--cookies-from-browser', browser]);
         }
         if (r.code !== 0) {
           const failure = browser ? classifyYtDlpError(r.stderr) : first;
@@ -410,14 +549,30 @@ export class YtDlpResolver implements VideoResolver {
       const lastJson = r.stdout.trim().split('\n').filter((l) => l.startsWith('{')).pop();
       if (lastJson) { try { meta = JSON.parse(lastJson) as YtDlpMeta; } catch { /* metadata is optional */ } }
 
-      const manual = pickManualCaption(opts.workDir, meta, opts.preferredLanguage);
+      const retrievalErrors: string[] = [];
+      let manual = pickManualCaption(opts.workDir, meta, opts.preferredLanguage);
+      if (!manual && subtitleFailure !== null) {
+        const choice = pickManualTrack(meta, opts.preferredLanguage);
+        const got: CaptionFetch = choice
+          ? await fetchCaptionTrack(choice, meta.http_headers, opts.workDir, 'manual')
+          : { error: `manual captions could not be retrieved: ${subtitleFailure}` };
+        if ('track' in got) manual = got.track;
+        else retrievalErrors.push(got.error);
+      }
       let auto: CaptionTrack | null = null;
       if (!manual) {
         // chooseCaptionTier never consults auto when a manual track exists, so
         // the fetch is only worth its network cost in the manual-less case.
-        const track = pickAutoTrack(meta, opts.preferredLanguage);
-        if (track) auto = await downloadAutoTrack(track, meta.http_headers, opts.workDir);
+        // Normally already under way since the info dict was printed; started
+        // here only when the prefetcher saw no JSON or expected a manual track.
+        const choice = pickAutoTrack(meta, opts.preferredLanguage);
+        const early = prefetchers[prefetchers.length - 1]?.result ?? null;
+        const got = early ?? (choice ? fetchCaptionTrack(choice, meta.http_headers, opts.workDir, 'automatic') : null);
+        const fetched = got ? await got : null;
+        if (fetched && 'track' in fetched) auto = fetched.track;
+        else if (fetched) retrievalErrors.push(fetched.error);
       }
+      const captions: Captions = { manual, auto, ...(retrievalErrors.length > 0 ? { retrievalErrors } : {}) };
 
       if (!wantsDownload) {
         // No file was ever fetched, so there is nothing to probe() --
@@ -431,7 +586,7 @@ export class YtDlpResolver implements VideoResolver {
         return {
           status: 'ok', filePath: '', platform: meta.extractor ?? 'unknown',
           title: meta.title ?? 'video', duration: meta.duration ?? 0, resolvedBy: 'ytdlp',
-          captions: { manual, auto },
+          captions,
           languageHint: meta.language ?? null,
           rangeApplied: false,
           metadata: toVideoMetadata(meta),
@@ -455,7 +610,7 @@ export class YtDlpResolver implements VideoResolver {
       return {
         status: 'ok', filePath, platform: meta.extractor ?? 'unknown',
         title: meta.title ?? 'video', duration: p.duration, resolvedBy: 'ytdlp',
-        captions: { manual, auto },
+        captions,
         languageHint: meta.language ?? null,
         rangeApplied,
         metadata: toVideoMetadata(meta),
@@ -463,6 +618,7 @@ export class YtDlpResolver implements VideoResolver {
         clipEnd: wantsRange && rangeApplied ? opts.end : undefined,
       };
     } finally {
+      for (const pre of prefetchers) pre.cancel();
       cookies.dispose();
     }
   }

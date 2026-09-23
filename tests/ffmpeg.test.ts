@@ -3,7 +3,7 @@ import { mkdtempSync, statSync, mkdirSync, writeFileSync, chmodSync } from 'node
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { probe, normalize, trim, extractFrame, makeTestVideo } from '../src/media/ffmpeg.js';
+import { probe, normalize, trim, extractFrame, makeTestVideo, extractAudio } from '../src/media/ffmpeg.js';
 import { run } from '../src/util/run.js';
 
 let dir: string, sample: string;
@@ -20,7 +20,9 @@ describe('ffmpeg layer', () => {
     expect(p.fps).toBeGreaterThan(0);
   });
   it('normalizes to a 720p-capped video plus 16kHz mono wav', async () => {
-    const { video, audio } = await normalize(sample, dir);
+    const { video, audio: maybeAudio } = await normalize(sample, dir);
+    expect(maybeAudio).not.toBeNull();
+    const audio = maybeAudio!;
     expect(existsSync(video)).toBe(true);
     expect(statSync(video).size).toBeGreaterThan(0);
     expect(existsSync(audio)).toBe(true);
@@ -74,6 +76,22 @@ describe('ffmpeg layer', () => {
     expect(vp.width).toBeLessThanOrEqual(1280);
   }, 60_000);
 
+  it('keeps the audio in the normalized video, so a delivered videoPath can be transcribed again', async () => {
+    const workDir = join(dir, 'keeps-audio');
+    mkdirSync(workDir, { recursive: true });
+    const { video } = await normalize(sample, workDir);
+    const { stdout } = await run('ffprobe', [
+      '-v', 'error', '-select_streams', 'a', '-show_entries', 'stream=codec_name', '-of', 'csv=p=0', video,
+    ]);
+    expect(stdout.trim()).toBe('aac');
+  });
+
+  it('reports a failed audio extraction instead of passing it off as a silent video', async () => {
+    const broken = join(dir, 'not-a-video.mp4');
+    writeFileSync(broken, 'this is not media');
+    await expect(extractAudio(broken, dir)).rejects.toThrow(/could not read/);
+  });
+
   it('handles audio absence: silent video produces no audio file', async () => {
     // Create a fixture with no audio stream (colour source only, no anullsrc)
     const noAudioFixture = join(dir, 'silent.mp4');
@@ -88,7 +106,8 @@ describe('ffmpeg layer', () => {
     const { video, audio } = await normalize(noAudioFixture, workDir);
     expect(existsSync(video)).toBe(true);
     expect(statSync(video).size).toBeGreaterThan(0);
-    expect(existsSync(audio)).toBe(false);
+    expect(audio).toBeNull();
+    expect(existsSync(join(workDir, 'work.wav'))).toBe(false);
   });
 });
 

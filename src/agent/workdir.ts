@@ -1,4 +1,6 @@
 import { mkdirSync, readdirSync, rmSync, renameSync, copyFileSync, existsSync, statSync } from 'node:fs';
+import { opendir, stat, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join, basename } from 'node:path';
 
 /**
@@ -114,4 +116,43 @@ export function deliverFile(itemDir: string, workDir: string, from: string): str
   if (to === from) return from;
   try { renameSync(from, to); } catch { copyFileSync(from, to); }
   return to;
+}
+
+/** What resolve_video's mkdtempSync(join(tmpdir(), 'norma-res-')) named its
+ *  directories before 0.14.0. Exact: `norma-res-` plus mkdtemp's 6 characters. */
+const LEGACY_RESOLVE_DIR_RE = /^norma-res-[A-Za-z0-9]{6}$/;
+const LEGACY_MIN_AGE_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Removes the `norma-res-*` directories resolve_video left in os.tmpdir()
+ * before 0.14.0 -- one per call, never cleaned up (523 of them, 32 MB, on the
+ * machine that found it). Nothing creates them any more, so this is a
+ * clean-up of history, run once at server start.
+ *
+ * Age-gated at 24 hours, the same reasoning as src/util/partials.ts: an older
+ * server version may still be running and using one right now, and nothing
+ * here can tell. A resolve cannot plausibly take a day (yt-dlp is given 15
+ * minutes), and a directory's mtime moves whenever a file inside is created.
+ * Async and abortable: a temp directory can hold hundreds of thousands of
+ * entries, and server shutdown must never wait on this.
+ */
+export async function sweepLegacyResolveTempDirs(
+  opts: { dir?: string; now?: number; signal?: AbortSignal } = {},
+): Promise<number> {
+  const dir = opts.dir ?? tmpdir();
+  const now = opts.now ?? Date.now();
+  let removed = 0;
+  try {
+    for await (const entry of await opendir(dir)) {
+      if (opts.signal?.aborted) break;
+      if (!entry.isDirectory() || !LEGACY_RESOLVE_DIR_RE.test(entry.name)) continue;
+      const p = join(dir, entry.name);
+      try {
+        if (now - (await stat(p)).mtimeMs < LEGACY_MIN_AGE_MS) continue;
+        await rm(p, { recursive: true, force: true });
+        removed++;
+      } catch { /* vanished or unreadable -- nothing to do */ }
+    }
+  } catch { /* unreadable temp directory -- best-effort */ }
+  return removed;
 }

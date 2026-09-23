@@ -1,5 +1,5 @@
-import { mkdirSync, existsSync, renameSync, copyFileSync, rmSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { mkdirSync, existsSync } from 'node:fs';
+import { join } from 'node:path';
 import type { AnalyzeStage, FrameMode, Manifest, Transcript } from '../types.js';
 import { analyzeVideo } from '../analyze.js';
 import { buildManifest } from '../manifest.js';
@@ -51,81 +51,30 @@ function isLocalPath(pathOrUrl: string): boolean {
   return !/^https?:\/\//i.test(pathOrUrl) && existsSync(pathOrUrl);
 }
 
-/**
- * Moves (falling back to copying, e.g. across devices) a working-directory
- * frame image into destinationPath, matching resolveTool.ts's own
- * rename-then-copy pattern for videoPath. A source that no longer exists is
- * left exactly as reported rather than throwing: this only ever runs
- * against paths analyzeVideo itself produced, but a defensive no-op keeps a
- * surprising pipeline state from taking down the whole call over a handful
- * of frame thumbnails.
- */
-function relocateFrame(destinationPath: string, imagePath: string): string {
-  if (!existsSync(imagePath)) return imagePath;
-  const dest = join(destinationPath, basename(imagePath));
-  if (dest === imagePath) return imagePath;
-  try { renameSync(imagePath, dest); } catch { copyFileSync(imagePath, dest); }
-  return dest;
-}
-
-/**
- * Fix 6 (deferred #18, local-source leak half): for a local source,
- * analyzeVideo ran against its own private mkdtempSync'd working directory
- * (outDir was deliberately left unset above), and when frameMode is 'key'
- * its manifest's source.filePath points at the re-encoded copy it made
- * there (work.mp4) -- never cleaned up, so every local analyze_video call
- * left a full re-encode behind (deferred #18). The rewrite below always
- * replaces that path with item.pathOrUrl for a local source, so once it has
- * happened, nothing in the final reply or manifest (`m`) references the
- * pre-rewrite path any more -- it is an orphaned temp, not a second copy of
- * anything the agent still needs.
- *
- * Comparing the pre- and post-rewrite VALUES -- not "is this a local
- * source" -- is what keeps this safe: it is what the brief calls "check
- * what the reply's videoPath and the manifest's source.filePath actually
- * reference" before deleting anything. When frameMode isn't 'key', or no
- * range was applied, analyzeVideo's own filePath is often ALREADY
- * item.pathOrUrl (resolve()'s bare-local-path branch returns the caller's
- * path back unchanged) -- rawFilePath === finalFilePath in that case, so
- * this is a no-op, and the caller's own file is never touched. Only a
- * genuinely different, analyzeVideo-created path is ever removed.
- * Best-effort: a failed delete must never fail the call.
- */
-function cleanupOrphanedCopy(rawFilePath: string | undefined, finalFilePath: string | undefined): void {
-  if (!rawFilePath || rawFilePath === finalFilePath) return;
-  try { rmSync(rawFilePath, { force: true }); } catch { /* best-effort */ }
-}
-
 async function analyzeOneVideoAttempt(
   item: AnalyzeVideoItem, destinationPath: string, onStage?: (stage: AnalyzeStage) => void,
 ): Promise<AnalyzeItemResult> {
   mkdirSync(destinationPath, { recursive: true });
 
   // Spec §2.1: a source already on disk must not be duplicated into
-  // destinationPath. analyzeVideo's normalize() step unconditionally writes
-  // a re-encoded working copy (plus its frames/ subdirectory) into whatever
-  // outDir it is given (src/analyze.ts -> src/media/ffmpeg.ts's
-  // normalize()) -- there is no way to get frames out of it without also
-  // getting that copy in the same directory. For an already-local source
-  // that copy would be a second, disk-doubling copy of a file the agent
-  // already placed, so outDir is left unset -- analyzeVideo falls back to
-  // its own private mkdtempSync'd directory (src/analyze.ts) -- and only
-  // the (cheap) frame thumbnails are relocated into destinationPath below.
+  // destinationPath -- the reply points at the caller's own file instead.
   const local = isLocalPath(item.pathOrUrl);
 
-  // A URL source used to pass destinationPath as outDir, which handed the
-  // caller every intermediate the pipeline produces: one real run left 258
-  // candidate JPEGs for a 40-frame request, plus BOTH the download and its
-  // normalized re-encode -- 390 MB delivered for a result of 40 images and a
-  // transcript. It now works in a private scratch directory (src/agent/
-  // workdir.ts explains why that lives inside destinationPath rather than
-  // in os.tmpdir()) and only the deliverables are moved out.
+  // Every source works in a private scratch directory inside destinationPath
+  // (src/agent/workdir.ts explains why there rather than os.tmpdir()), and
+  // only the deliverables are moved out. Pointed straight at destinationPath,
+  // one real run left 258 candidate JPEGs for a 40-frame request plus both
+  // the download and its re-encode -- 390 MB for 40 images and a transcript.
+  // A local source used to get analyzeVideo's own os.tmpdir() directory
+  // instead, which nothing removed: every call left a `norma-XXXXXX/` of
+  // candidate frames behind.
   //
   // Swept on entry, before minting: a killed run's scratch is collected by
   // the next call into that directory. Nothing else can collect it -- the
   // age-gated partials sweep only ever looks inside the download's own
   // directory, which is now the abandoned scratch itself.
-  const workDir = local ? null : (sweepAbandonedWorkDirs(destinationPath), mintWorkDir(destinationPath));
+  sweepAbandonedWorkDirs(destinationPath);
+  const workDir = mintWorkDir(destinationPath);
 
   try {
     const raw = await analyzeVideo(item.pathOrUrl, {
@@ -138,46 +87,24 @@ async function analyzeOneVideoAttempt(
       preferredLanguage: item.language,
       destinationPath,
       onStage,
-      ...(workDir ? { outDir: workDir } : {}),
+      outDir: workDir,
     });
 
-    // Spec §2.1: for a local source, relocate the frame thumbnails into
-    // destinationPath (a handful of JPEGs, not the video) and point
-    // source.filePath back at the file the agent already has, rather than at
-    // analyzeVideo's private, ephemeral normalized copy -- which is kept OUT
-    // of destinationPath specifically so it never persists as a second copy
-    // of the source (see the outDir comment above).
-    // For a URL source, move the deliverables out of the scratch directory:
-    // the SELECTED frames (not the candidate pool they were chosen from) and
-    // the one video file the reply will point at. Everything else the pipeline
-    // wrote -- rejected candidates, the second copy of the video, the caption
-    // files the transcript was parsed out of -- stays behind and is discarded
-    // with the scratch directory in the finally below.
-    const m: Manifest = local
-      ? {
-          ...raw,
-          source: raw.source.filePath ? { ...raw.source, filePath: item.pathOrUrl } : raw.source,
-          frames: raw.frames.map((f) => ({ ...f, image: relocateFrame(destinationPath, f.image) })),
-        }
-      : workDir
-        ? {
-            ...raw,
-            source: raw.source.filePath
-              ? { ...raw.source, filePath: deliverFile(destinationPath, workDir, raw.source.filePath) }
-              : raw.source,
-            frames: raw.frames.map((f) => ({ ...f, image: deliverFile(destinationPath, workDir, f.image) })),
-          }
-        : raw;
-
-    // Fix 6: clean up analyzeVideo's own working copy once it has been
-    // superseded above -- see cleanupOrphanedCopy's doc comment for why this
-    // order (after computing `m`, comparing against the pre-rewrite `raw`) is
-    // what keeps it from ever touching a file the reply still points at.
-    // Scoped to the local path deliberately. There, `m` points at the caller's
-    // own file and `raw` at an orphaned re-encode worth deleting. On the URL
-    // path the two differ because the file MOVED, and its old location is
-    // already gone -- and the whole scratch directory is removed below anyway.
-    if (local) cleanupOrphanedCopy(raw.source.filePath, m.source.filePath);
+    // Move the deliverables out of the scratch directory: the SELECTED
+    // frames (not the candidate pool they were chosen from) and, for a URL,
+    // the one video file the reply will point at. For a local source the
+    // reply points at the caller's own file rather than at any re-encode
+    // made from it. Everything else the pipeline wrote -- rejected
+    // candidates, a second copy of the video, the caption files the
+    // transcript was parsed out of -- is discarded with the scratch
+    // directory in the finally below.
+    const m: Manifest = {
+      ...raw,
+      source: !raw.source.filePath
+        ? raw.source
+        : { ...raw.source, filePath: local ? item.pathOrUrl : deliverFile(destinationPath, workDir, raw.source.filePath) },
+      frames: raw.frames.map((f) => ({ ...f, image: deliverFile(destinationPath, workDir, f.image) })),
+    };
 
     const manifestPath = writeManifest(destinationPath, m);
 
@@ -208,7 +135,7 @@ async function analyzeOneVideoAttempt(
     // (analyzeOneVideo's own catch turns that into a failure result) -- so a
     // finally is the only placement that cannot leave a full video and a few
     // hundred JPEGs behind in the caller's directory.
-    if (workDir) discardWorkDir(workDir);
+    discardWorkDir(workDir);
   }
 }
 
